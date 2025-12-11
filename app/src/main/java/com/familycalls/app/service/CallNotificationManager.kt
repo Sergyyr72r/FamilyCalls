@@ -121,9 +121,9 @@ class CallNotificationManager(private val context: Context) {
         callerName: String,
         callerPhone: String
     ): Notification {
-        // Full-screen intent (opens VideoCallActivity when notification is tapped)
-        // This creates the popup at the bottom like WhatsApp
-        val fullScreenIntent = Intent(context, VideoCallActivity::class.java).apply {
+        // Content intent (opens VideoCallActivity when notification body is tapped)
+        // Note: We don't auto-open the activity - user must tap Accept button
+        val contentIntent = Intent(context, VideoCallActivity::class.java).apply {
             putExtra("contactId", callerId)
             putExtra("contactName", callerName)
             putExtra("contactPhone", callerPhone)
@@ -133,15 +133,15 @@ class CallNotificationManager(private val context: Context) {
                     Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
         
-        val fullScreenPendingIntent = PendingIntent.getActivity(
+        val contentPendingIntent = PendingIntent.getActivity(
             context,
             REQUEST_CODE_FULL_SCREEN,
-            fullScreenIntent,
+            contentIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or 
             PendingIntent.FLAG_IMMUTABLE
         )
         
-        // Accept action
+        // Accept action - this is the ONLY way to accept the call
         val acceptIntent = Intent(context, CallActionReceiver::class.java).apply {
             action = ACTION_ACCEPT
             putExtra("contactId", callerId)
@@ -179,8 +179,12 @@ class CallNotificationManager(private val context: Context) {
             .setSmallIcon(android.R.drawable.ic_menu_call) // System call icon
             .setContentTitle("Incoming Video Call")
             .setContentText("$callerName is calling...")
-            .setPriority(NotificationCompat.PRIORITY_HIGH) // Required for heads-up
-            .setFullScreenIntent(fullScreenPendingIntent, true) // Shows as popup - MUST be true
+            .setPriority(NotificationCompat.PRIORITY_HIGH) // Required for heads-up notification
+            .setContentIntent(contentPendingIntent) // Opens activity when notification body is tapped
+            // Full-screen intent is required for lock screen support
+            // The intent opens VideoCallActivity with isIncoming=true, which shows Accept/Reject buttons
+            // It does NOT auto-accept - user must tap the Accept button
+            .setFullScreenIntent(contentPendingIntent, true) // Required for lock screen, shows incoming UI only
             .setOngoing(true) // Can't be dismissed easily
             .setAutoCancel(false)
             .setDefaults(NotificationCompat.DEFAULT_ALL) // Sound, vibration, lights

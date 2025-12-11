@@ -78,14 +78,17 @@ class VideoCallActivity : AppCompatActivity() {
         contactPhone = intent.getStringExtra("contactPhone") ?: ""
         isIncoming = intent.getBooleanExtra("isIncoming", false)
         
+        setupButtons()
+        
         if (isIncoming) {
+            // For incoming calls, show UI but do NOT initialize Agora or check permissions yet
+            // Wait for user to explicitly tap Accept button
             showIncomingCallUI()
         } else {
+            // For outgoing calls, start the call immediately
             startOutgoingCall()
+            checkPermissions()
         }
-        
-        setupButtons()
-        checkPermissions()
     }
     
     private fun checkPermissions() {
@@ -606,11 +609,25 @@ class VideoCallActivity : AppCompatActivity() {
         // Update call status
         updateCallStatus("accepted")
         
-        // Initialize Agora and join channel
-        if (agoraEngine == null) {
-            initializeAgora()
+        // Check permissions first, then initialize Agora and join channel
+        val permissions = arrayOf(
+            Manifest.permission.CAMERA,
+            Manifest.permission.RECORD_AUDIO
+        )
+        
+        val missingPermissions = permissions.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        
+        if (missingPermissions.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, missingPermissions.toTypedArray(), PERMISSION_REQUEST_CODE)
         } else {
-            joinChannel()
+            // Initialize Agora and join channel
+            if (agoraEngine == null) {
+                initializeAgora()
+            } else {
+                joinChannel()
+            }
         }
     }
     
