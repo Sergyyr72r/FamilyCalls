@@ -7,9 +7,11 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
@@ -31,6 +33,7 @@ import com.familycalls.app.databinding.ItemMessageBinding
 import com.familycalls.app.databinding.ItemMessageImageBinding
 import com.familycalls.app.databinding.ItemMessageVideoBinding
 import com.google.android.material.snackbar.Snackbar
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
@@ -46,6 +49,14 @@ class ChatActivity : AppCompatActivity() {
     private val REQUEST_CODE_IMAGE = 100
     private val REQUEST_CODE_VIDEO = 101
     
+    private fun isActivityDestroyed(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
+            isDestroyed
+        } else {
+            false
+        }
+    }
+    
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityChatBinding.inflate(layoutInflater)
@@ -56,8 +67,33 @@ class ChatActivity : AppCompatActivity() {
         contactId = intent.getStringExtra("contactId") ?: ""
         contactName = intent.getStringExtra("contactName") ?: ""
         
-        supportActionBar?.title = contactName
-        supportActionBar?.setDisplayHomeAsUpEnabled(true)
+        // Setup custom header
+        binding.tvContactName.text = contactName
+        binding.btnBack.setOnClickListener {
+            finish()
+        }
+        
+        // Load contact avatar
+        if (contactId.isNotEmpty()) {
+            com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                .collection("users")
+                .document(contactId)
+                .get()
+                .addOnSuccessListener { doc ->
+                    if (doc.exists()) {
+                        val avatarUrl = doc.getString("avatarUrl")
+                        if (!avatarUrl.isNullOrEmpty()) {
+                            binding.ivAvatar?.let { imageView ->
+                                Glide.with(this)
+                                    .load(avatarUrl)
+                                    .circleCrop()
+                                    .into(imageView)
+                                binding.cvAvatar.setCardBackgroundColor(android.graphics.Color.TRANSPARENT)
+                            }
+                        }
+                    }
+                }
+        }
         
         binding.recyclerViewMessages.layoutManager = LinearLayoutManager(this).apply {
             stackFromEnd = true
@@ -76,11 +112,33 @@ class ChatActivity : AppCompatActivity() {
     }
     
     private fun loadMessages() {
+        if (currentUserId.isEmpty() || contactId.isEmpty()) {
+            android.util.Log.e("ChatActivity", "Cannot load messages: currentUserId='$currentUserId', contactId='$contactId'")
+            Toast.makeText(this, "Error: Invalid user or contact ID", Toast.LENGTH_SHORT).show()
+            return
+        }
+        
+        android.util.Log.d("ChatActivity", "Loading messages between $currentUserId and $contactId")
+        
         lifecycleScope.launch {
-            chatRepository.getMessages(currentUserId, contactId).collectLatest { messages ->
-                messagesAdapter.submitList(messages)
-                if (messages.isNotEmpty()) {
-                    binding.recyclerViewMessages.smoothScrollToPosition(messages.size - 1)
+            try {
+                chatRepository.getMessages(currentUserId, contactId).collectLatest { messages ->
+                    android.util.Log.d("ChatActivity", "Received ${messages.size} messages from repository")
+                    messagesAdapter.submitList(messages)
+                    if (messages.isNotEmpty()) {
+                        binding.recyclerViewMessages.smoothScrollToPosition(messages.size - 1)
+                    }
+                }
+            } catch (e: CancellationException) {
+                // This is expected when activity is destroyed - don't show error
+                android.util.Log.d("ChatActivity", "Message collection cancelled (activity destroyed)")
+                throw e // Re-throw to respect cancellation
+            } catch (e: Exception) {
+                android.util.Log.e("ChatActivity", "Exception in loadMessages() flow", e)
+                e.printStackTrace()
+                // Only show error if activity is still active
+                if (!isFinishing && !isActivityDestroyed()) {
+                    Toast.makeText(this@ChatActivity, "Error loading messages: ${e.message}", Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -88,7 +146,18 @@ class ChatActivity : AppCompatActivity() {
     
     private fun sendTextMessage() {
         val text = binding.etMessage.text.toString().trim()
-        if (text.isEmpty()) return
+        if (text.isEmpty()) {
+            android.util.Log.d("ChatActivity", "sendTextMessage: text is empty, ignoring")
+            return
+        }
+        
+        if (currentUserId.isEmpty() || contactId.isEmpty()) {
+            android.util.Log.e("ChatActivity", "Cannot send message: currentUserId='$currentUserId', contactId='$contactId'")
+            Toast.makeText(this, "Error: Invalid user or contact ID", Toast.LENGTH_SHORT).show()
+            return
+        }
+        
+        android.util.Log.d("ChatActivity", "Sending message: text='$text', senderId=$currentUserId, receiverId=$contactId")
         
         val message = Message(
             senderId = currentUserId,
@@ -100,9 +169,13 @@ class ChatActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val result = chatRepository.sendMessage(message)
             if (result.isSuccess) {
+                android.util.Log.d("ChatActivity", "Message sent successfully")
                 binding.etMessage.text?.clear()
             } else {
-                Toast.makeText(this@ChatActivity, "Failed to send message", Toast.LENGTH_SHORT).show()
+                val error = result.exceptionOrNull()
+                android.util.Log.e("ChatActivity", "Failed to send message", error)
+                error?.printStackTrace()
+                Toast.makeText(this@ChatActivity, "Failed to send message: ${error?.message}", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -211,11 +284,6 @@ class ChatActivity : AppCompatActivity() {
         }
     }
     
-    override fun onSupportNavigateUp(): Boolean {
-        finish()
-        return true
-    }
-    
     inner class MessagesAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
         private var messages = listOf<Message>()
         
@@ -280,13 +348,20 @@ class ChatActivity : AppCompatActivity() {
         ) : RecyclerView.ViewHolder(binding.root) {
             fun bind(message: Message, isSent: Boolean) {
                 binding.tvMessage.text = message.text
-                binding.root.layoutParams = (binding.root.layoutParams as ViewGroup.MarginLayoutParams).apply {
-                    if (isSent) {
-                        setMargins(100, 8, 8, 8)
-                    } else {
-                        setMargins(8, 8, 100, 8)
-                    }
+                
+                val layoutParams = binding.tvMessage.layoutParams as FrameLayout.LayoutParams
+                if (isSent) {
+                    // Sent message: align right, blue background, white text
+                    layoutParams.gravity = Gravity.END
+                    binding.tvMessage.setBackgroundResource(R.drawable.bg_message_sent)
+                    binding.tvMessage.setTextColor(ContextCompat.getColor(binding.root.context, R.color.white))
+                } else {
+                    // Received message: align left, gray background, dark text
+                    layoutParams.gravity = Gravity.START
+                    binding.tvMessage.setBackgroundResource(R.drawable.bg_message_received)
+                    binding.tvMessage.setTextColor(ContextCompat.getColor(binding.root.context, R.color.ios_text_primary))
                 }
+                binding.tvMessage.layoutParams = layoutParams
             }
         }
         
@@ -296,14 +371,17 @@ class ChatActivity : AppCompatActivity() {
             fun bind(message: Message, isSent: Boolean) {
                 Glide.with(binding.root.context)
                     .load(message.imageUrl)
+                    .placeholder(R.color.ios_gray_light)
+                    .error(R.color.ios_gray_light)
                     .into(binding.ivImage)
-                binding.root.layoutParams = (binding.root.layoutParams as ViewGroup.MarginLayoutParams).apply {
-                    if (isSent) {
-                        setMargins(100, 8, 8, 8)
-                    } else {
-                        setMargins(8, 8, 100, 8)
-                    }
+                
+                val layoutParams = binding.root.layoutParams as FrameLayout.LayoutParams
+                if (isSent) {
+                    layoutParams.gravity = Gravity.END
+                } else {
+                    layoutParams.gravity = Gravity.START
                 }
+                binding.root.layoutParams = layoutParams
             }
         }
         
@@ -324,4 +402,3 @@ class ChatActivity : AppCompatActivity() {
         }
     }
 }
-

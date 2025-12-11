@@ -6,6 +6,7 @@ data class User(
     val phone: String = "",
     val deviceId: String = "",
     val fcmToken: String = "", // FCM token for push notifications
+    val avatarUrl: String = "", // Avatar picture URL
     val registeredAt: Long = System.currentTimeMillis()
 )
 

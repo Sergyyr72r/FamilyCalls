@@ -8,7 +8,7 @@
     android:focusable="true"
     android:padding="12dp">
 
-    <!-- Avatar Placeholder -->
+    <!-- Avatar -->
     <androidx.cardview.widget.CardView
         android:id="@+id/cvAvatar"
         android:layout_width="50dp"
@@ -28,61 +28,59 @@
             android:contentDescription="Avatar" />
     </androidx.cardview.widget.CardView>
 
+    <!-- Call Icon -->
+    <ImageView
+        android:id="@+id/ivCallIcon"
+        android:layout_width="24dp"
+        android:layout_height="24dp"
+        android:layout_marginStart="16dp"
+        app:layout_constraintBottom_toBottomOf="@+id/tvCallerName"
+        app:layout_constraintStart_toEndOf="@+id/cvAvatar"
+        app:layout_constraintTop_toTopOf="@+id/tvCallerName" />
+
+    <!-- Caller Name -->
     <TextView
-        android:id="@+id/tvName"
+        android:id="@+id/tvCallerName"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:layout_marginStart="16dp"
+        android:layout_marginStart="8dp"
         android:layout_marginEnd="8dp"
-        android:text="Contact Name"
+        android:text="Caller Name"
         android:textColor="#000000"
         android:textSize="17sp"
         android:textStyle="bold"
-        app:layout_constraintBottom_toTopOf="@+id/tvPhone"
-        app:layout_constraintEnd_toStartOf="@+id/tvDate"
-        app:layout_constraintStart_toEndOf="@+id/cvAvatar"
+        app:layout_constraintBottom_toTopOf="@+id/tvCallTime"
+        app:layout_constraintEnd_toStartOf="@+id/tvCallDate"
+        app:layout_constraintStart_toEndOf="@+id/ivCallIcon"
         app:layout_constraintTop_toTopOf="@+id/cvAvatar"
         app:layout_constraintVertical_chainStyle="packed" />
 
+    <!-- Call Time -->
     <TextView
-        android:id="@+id/tvPhone"
+        android:id="@+id/tvCallTime"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:layout_marginStart="16dp"
+        android:layout_marginStart="8dp"
+        android:layout_marginTop="4dp"
         android:layout_marginEnd="8dp"
-        android:text="Hey there! I am using FamilyCalls."
+        android:text="Call time"
         android:textColor="#808080"
         android:textSize="14sp"
-        android:singleLine="true"
-        android:ellipsize="end"
         app:layout_constraintBottom_toBottomOf="@+id/cvAvatar"
-        app:layout_constraintEnd_toStartOf="@+id/tvDate"
-        app:layout_constraintStart_toEndOf="@+id/cvAvatar"
-        app:layout_constraintTop_toBottomOf="@+id/tvName" />
+        app:layout_constraintEnd_toStartOf="@+id/tvCallDate"
+        app:layout_constraintStart_toEndOf="@+id/ivCallIcon"
+        app:layout_constraintTop_toBottomOf="@+id/tvCallerName" />
 
+    <!-- Call Date -->
     <TextView
-        android:id="@+id/tvDate"
+        android:id="@+id/tvCallDate"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Yesterday"
+        android:text="Today"
         android:textColor="#808080"
         android:textSize="12sp"
-        app:layout_constraintEnd_toStartOf="@+id/ivVideoCall"
-        app:layout_constraintTop_toTopOf="@+id/tvName"
-        app:layout_constraintBaseline_toBaselineOf="@+id/tvName" />
-
-    <ImageButton
-        android:id="@+id/ivVideoCall"
-        android:layout_width="40dp"
-        android:layout_height="40dp"
-        android:layout_marginEnd="8dp"
-        android:background="?attr/selectableItemBackgroundBorderless"
-        android:src="@drawable/ic_video_call"
-        android:contentDescription="Video call"
-        android:scaleType="centerInside"
-        android:padding="8dp"
         app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintBottom_toBottomOf="parent" />
+        app:layout_constraintTop_toTopOf="@+id/tvCallerName"
+        app:layout_constraintBaseline_toBaselineOf="@+id/tvCallerName" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>

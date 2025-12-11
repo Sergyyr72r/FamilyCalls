@@ -18,7 +18,9 @@ import com.familycalls.app.databinding.ItemContactBinding
 import android.util.Log
 import com.familycalls.app.service.CallNotificationManager
 import com.familycalls.app.service.CallService
+import com.familycalls.app.service.MessageNotificationManager
 import com.familycalls.app.ui.chat.ChatActivity
+import com.familycalls.app.data.model.Message
 import com.familycalls.app.ui.call.VideoCallActivity
 import com.familycalls.app.utils.ShareUtils
 import com.google.firebase.firestore.FirebaseFirestore
@@ -36,12 +38,31 @@ class MainActivity : AppCompatActivity() {
     private val authRepository = AuthRepository()
     private lateinit var prefs: SharedPreferences
     private var currentUserId: String = ""
-    private val contactsAdapter = ContactsAdapter { contact ->
-        showContactOptions(contact)
-    }
+    private val contactsAdapter = ContactsAdapter(
+        onContactClick = { contact ->
+            // Card click opens chat
+            startChat(contact)
+        },
+        onVideoCallClick = { contact ->
+            // Video icon click starts video call
+            startCall(contact)
+        }
+    )
+    private val callsAdapter = CallHistoryAdapter()
+    
+    private var currentTab: Tab = Tab.CHATS
+    private enum class Tab { CHATS, CALLS }
+    
+    private var currentProfileDialog: androidx.appcompat.app.AlertDialog? = null
+    private var currentDialogAvatarView: android.widget.ImageView? = null
+    
+    // Track processed messages to avoid duplicate notifications
+    private val processedMessageIds = mutableSetOf<String>()
+    private var messageListener: com.google.firebase.firestore.ListenerRegistration? = null
 
     companion object {
         private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 101
+        private const val REQUEST_CODE_AVATAR = 102
     }
     
     private fun isActivityDestroyed(): Boolean {
@@ -54,6 +75,10 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // Hide the action bar (remove black header)
+        supportActionBar?.hide()
+        
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
@@ -112,9 +137,16 @@ class MainActivity : AppCompatActivity() {
             binding.recyclerViewContacts.layoutManager = LinearLayoutManager(this)
             binding.recyclerViewContacts.adapter = contactsAdapter
             
+            binding.recyclerViewCalls.layoutManager = LinearLayoutManager(this)
+            binding.recyclerViewCalls.adapter = callsAdapter
+            
+            // Setup tab switching
+            setupTabs()
+            
             android.util.Log.d("MainActivity", "RecyclerView setup complete")
             
             loadContacts()
+            loadCallHistory()
             android.util.Log.d("MainActivity", "loadContacts() called")
             
             // Listen for new users
@@ -131,6 +163,14 @@ class MainActivity : AppCompatActivity() {
                 android.util.Log.d("MainActivity", "listenForIncomingCalls() called")
             } catch (e: Exception) {
                 android.util.Log.e("MainActivity", "Error in listenForIncomingCalls()", e)
+            }
+            
+            // Listen for new messages
+            try {
+                listenForNewMessages()
+                android.util.Log.d("MainActivity", "listenForNewMessages() called")
+            } catch (e: Exception) {
+                android.util.Log.e("MainActivity", "Error in listenForNewMessages()", e)
             }
             
             // Setup overflow menu
@@ -159,22 +199,17 @@ class MainActivity : AppCompatActivity() {
     
     private fun showMenu(v: View) {
         val popup = androidx.appcompat.widget.PopupMenu(this, v)
-        popup.menu.add("Simulate Incoming Call")
+        popup.menu.add("Profile Edit")
         popup.menu.add("Share App")
-        popup.menu.add("Logout")
         
         popup.setOnMenuItemClickListener { item ->
             when(item.title) {
-                "Simulate Incoming Call" -> {
-                    simulateIncomingCall()
+                "Profile Edit" -> {
+                    showProfileEditDialog()
                     true
                 }
                 "Share App" -> {
                     shareDownloadLink()
-                    true
-                }
-                "Logout" -> {
-                    logout()
                     true
                 }
                 else -> false
@@ -182,21 +217,208 @@ class MainActivity : AppCompatActivity() {
         }
         popup.show()
     }
-
-    private fun logout() {
-        // Clear local preferences
-        prefs.edit().clear().apply()
+    
+    private fun showProfileEditDialog() {
+        val dialog = androidx.appcompat.app.AlertDialog.Builder(this)
+            .create()
         
-        // Sign out from Firebase
-        com.google.firebase.auth.FirebaseAuth.getInstance().signOut()
+        val dialogView = LayoutInflater.from(this).inflate(R.layout.dialog_profile_edit, null)
+        dialog.setView(dialogView)
         
-        // Return to AuthActivity
-        val intent = Intent(this, com.familycalls.app.ui.auth.AuthActivity::class.java)
-        intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
-        startActivity(intent)
-        finish()
+        val cvAvatar = dialogView.findViewById<androidx.cardview.widget.CardView>(R.id.cvAvatar)
+        val ivAvatar = dialogView.findViewById<android.widget.ImageView>(R.id.ivAvatar)
+        val btnChangeAvatar = dialogView.findViewById<android.widget.Button>(R.id.btnChangeAvatar)
+        val etName = dialogView.findViewById<android.widget.EditText>(R.id.etName)
+        val etPhone = dialogView.findViewById<android.widget.EditText>(R.id.etPhone)
+        val btnCancel = dialogView.findViewById<android.widget.Button>(R.id.btnCancel)
+        val btnSave = dialogView.findViewById<android.widget.Button>(R.id.btnSave)
+        
+        // Store references for avatar selection
+        currentProfileDialog = dialog
+        currentDialogAvatarView = ivAvatar
+        
+        // Load current user data
+        FirebaseFirestore.getInstance().collection("users")
+            .document(currentUserId)
+            .get()
+            .addOnSuccessListener { doc ->
+                if (doc.exists()) {
+                    val user = doc.toObject(User::class.java)?.copy(id = doc.id)
+                    user?.let {
+                        etName?.setText(it.name)
+                        etPhone?.setText(it.phone)
+                        
+                        // Load avatar
+                        if (it.avatarUrl.isNotEmpty()) {
+                            com.bumptech.glide.Glide.with(this)
+                                .load(it.avatarUrl)
+                                .circleCrop()
+                                .into(ivAvatar ?: return@addOnSuccessListener)
+                            cvAvatar?.setCardBackgroundColor(android.graphics.Color.TRANSPARENT)
+                        } else {
+                            ivAvatar?.setImageResource(android.R.drawable.sym_def_app_icon)
+                            ivAvatar?.setColorFilter(android.graphics.Color.WHITE)
+                            cvAvatar?.setCardBackgroundColor(0xFFE0E0E0.toInt())
+                        }
+                    }
+                }
+            }
+        
+        btnChangeAvatar?.setOnClickListener {
+            val intent = android.content.Intent(android.content.Intent.ACTION_PICK).apply {
+                type = "image/*"
+            }
+            try {
+                startActivityForResult(Intent.createChooser(intent, "Select Avatar"), REQUEST_CODE_AVATAR)
+            } catch (e: Exception) {
+                android.util.Log.e("MainActivity", "Error opening image picker", e)
+                android.widget.Toast.makeText(this, "Error opening image picker", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
+        
+        btnCancel?.setOnClickListener {
+            currentProfileDialog = null
+            currentDialogAvatarView = null
+            dialog.dismiss()
+        }
+        
+        btnSave?.setOnClickListener {
+            val newName = etName?.text?.toString()?.trim() ?: ""
+            val newPhone = etPhone?.text?.toString()?.trim() ?: ""
+            
+            if (newName.isEmpty()) {
+                android.widget.Toast.makeText(this, "Name cannot be empty", android.widget.Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            
+            if (newPhone.isEmpty()) {
+                android.widget.Toast.makeText(this, "Phone cannot be empty", android.widget.Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            
+            btnSave.isEnabled = false
+            btnSave.text = "Saving..."
+            
+            // Check if new avatar was selected (stored in ivAvatar tag)
+            val selectedAvatarUri = ivAvatar?.tag as? android.net.Uri
+            
+            // Upload avatar if selected
+            if (selectedAvatarUri != null) {
+                uploadAvatarAndUpdateProfile(selectedAvatarUri, newName, newPhone) { success ->
+                    btnSave.isEnabled = true
+                    btnSave.text = "Save"
+                    if (success) {
+                        currentProfileDialog = null
+                        currentDialogAvatarView = null
+                        dialog.dismiss()
+                        loadContacts() // Refresh contact list
+                    }
+                }
+            } else {
+                // Just update name and phone
+                updateUserProfile(newName, newPhone, null) { success ->
+                    btnSave.isEnabled = true
+                    btnSave.text = "Save"
+                    if (success) {
+                        currentProfileDialog = null
+                        currentDialogAvatarView = null
+                        dialog.dismiss()
+                        loadContacts() // Refresh contact list
+                    }
+                }
+            }
+        }
+        
+        dialog.setOnDismissListener {
+            currentProfileDialog = null
+            currentDialogAvatarView = null
+        }
+        
+        dialog.show()
     }
     
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_CODE_AVATAR && resultCode == RESULT_OK && data?.data != null) {
+            val uri = data.data
+            uri?.let { avatarUri ->
+                // Update avatar preview in dialog
+                currentDialogAvatarView?.let { avatarView ->
+                    // Update the parent CardView background
+                    val parent = avatarView.parent as? androidx.cardview.widget.CardView
+                    parent?.setCardBackgroundColor(android.graphics.Color.TRANSPARENT)
+                    
+                    com.bumptech.glide.Glide.with(this)
+                        .load(avatarUri)
+                        .circleCrop()
+                        .into(avatarView)
+                    
+                    // Store the URI in the dialog view tag for later use
+                    avatarView.tag = avatarUri
+                    android.widget.Toast.makeText(this, "Avatar selected", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+    
+    private fun uploadAvatarAndUpdateProfile(
+        avatarUri: android.net.Uri,
+        name: String,
+        phone: String,
+        callback: (Boolean) -> Unit
+    ) {
+        lifecycleScope.launch {
+            try {
+                val storageRepository = com.familycalls.app.data.repository.StorageRepository()
+                val uploadResult = storageRepository.uploadImage(avatarUri, currentUserId)
+                
+                uploadResult.fold(
+                    onSuccess = { avatarUrl ->
+                        updateUserProfile(name, phone, avatarUrl, callback)
+                    },
+                    onFailure = { e ->
+                        android.util.Log.e("MainActivity", "Failed to upload avatar", e)
+                        android.widget.Toast.makeText(this@MainActivity, "Failed to upload avatar", android.widget.Toast.LENGTH_SHORT).show()
+                        callback(false)
+                    }
+                )
+            } catch (e: Exception) {
+                android.util.Log.e("MainActivity", "Error uploading avatar", e)
+                android.widget.Toast.makeText(this@MainActivity, "Error uploading avatar", android.widget.Toast.LENGTH_SHORT).show()
+                callback(false)
+            }
+        }
+    }
+    
+    private fun updateUserProfile(
+        name: String,
+        phone: String,
+        avatarUrl: String?,
+        callback: (Boolean) -> Unit
+    ) {
+        val updates = mutableMapOf<String, Any>(
+            "name" to name,
+            "phone" to phone
+        )
+        
+        if (avatarUrl != null) {
+            updates["avatarUrl"] = avatarUrl
+        }
+        
+        FirebaseFirestore.getInstance().collection("users")
+            .document(currentUserId)
+            .update(updates)
+            .addOnSuccessListener {
+                android.widget.Toast.makeText(this, "Profile updated successfully", android.widget.Toast.LENGTH_SHORT).show()
+                callback(true)
+            }
+            .addOnFailureListener { e ->
+                android.util.Log.e("MainActivity", "Failed to update profile", e)
+                android.widget.Toast.makeText(this, "Failed to update profile", android.widget.Toast.LENGTH_SHORT).show()
+                callback(false)
+            }
+    }
+
     private fun registerFCMToken() {
         if (currentUserId.isEmpty()) {
             android.util.Log.w("MainActivity", "Cannot register FCM token: userId is empty")
@@ -225,28 +447,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun simulateIncomingCall() {
-        android.util.Log.d("MainActivity", "Simulating incoming call...")
-        val serviceIntent = Intent(this, CallService::class.java).apply {
-            action = CallService.ACTION_SHOW_INCOMING_CALL
-            putExtra("callerId", "test_caller_id")
-            putExtra("callerName", "Test Caller")
-            putExtra("callerPhone", "+1 234 567 890")
-        }
-        
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(serviceIntent)
-            } else {
-                startService(serviceIntent)
-            }
-            android.widget.Toast.makeText(this, "Simulating call...", android.widget.Toast.LENGTH_SHORT).show()
-        } catch (e: Exception) {
-            android.util.Log.e("MainActivity", "Failed to start call simulation", e)
-            android.widget.Toast.makeText(this, "Failed to simulate call: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
-        }
-    }
-    
     override fun onResume() {
         super.onResume()
         android.util.Log.d("MainActivity", "MainActivity onResume - listener should be active")
@@ -497,17 +697,118 @@ class MainActivity : AppCompatActivity() {
         }
     }
     
-    private fun showContactOptions(contact: User) {
-        val options = arrayOf("Call", "Message")
-        androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle(contact.name)
-            .setItems(options) { _, which ->
-                when (which) {
-                    0 -> startCall(contact)
-                    1 -> startChat(contact)
-                }
+    private fun listenForNewMessages() {
+        try {
+            if (currentUserId.isEmpty()) {
+                android.util.Log.w("MainActivity", "Cannot listen for messages: currentUserId is empty")
+                return
             }
-            .show()
+            
+            if (isFinishing || isActivityDestroyed()) {
+                android.util.Log.w("MainActivity", "Activity is finishing, skipping message listener setup")
+                return
+            }
+            
+            android.util.Log.d("MainActivity", "Setting up message listener for userId: $currentUserId")
+            
+            val db = FirebaseFirestore.getInstance()
+            val messagesCollection = db.collection("messages")
+            
+            // Listen for new messages where this user is the receiver
+            messageListener = messagesCollection
+                .whereEqualTo("receiverId", currentUserId)
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        android.util.Log.e("MainActivity", "Error listening for messages", error)
+                        return@addSnapshotListener
+                    }
+                    
+                    if (snapshot == null) {
+                        return@addSnapshotListener
+                    }
+                    
+                    try {
+                        // Process document changes to detect only new messages
+                        for (documentChange in snapshot.documentChanges) {
+                            // Only process ADDED documents (new messages)
+                            if (documentChange.type == com.google.firebase.firestore.DocumentChange.Type.ADDED) {
+                                try {
+                                    val document = documentChange.document
+                                    val messageId = document.id
+                                    
+                                    // Skip if we've already processed this message
+                                    if (processedMessageIds.contains(messageId)) {
+                                        continue
+                                    }
+                                    
+                                    // Skip if this is from cache (initial load of old messages)
+                                    // We only want to notify for truly new messages
+                                    if (snapshot.metadata.isFromCache) {
+                                        // Mark old messages as processed but don't notify
+                                        processedMessageIds.add(messageId)
+                                        continue
+                                    }
+                                    
+                                    // Parse message
+                                    val message = document.toObject(Message::class.java)?.copy(id = messageId)
+                                    if (message == null || message.senderId.isEmpty()) {
+                                        android.util.Log.w("MainActivity", "Skipping message with invalid data: $messageId")
+                                        continue
+                                    }
+                                    
+                                    // Mark as processed
+                                    processedMessageIds.add(messageId)
+                                    
+                                    // Get sender name
+                                    db.collection("users").document(message.senderId)
+                                        .get()
+                                        .addOnSuccessListener { senderDoc ->
+                                            val senderName = senderDoc.getString("name") ?: "Unknown"
+                                            
+                                            // Show notification
+                                            val notificationManager = MessageNotificationManager(applicationContext)
+                                            
+                                            // Determine message text based on type
+                                            val messageText = when (message.type) {
+                                                com.familycalls.app.data.model.MessageType.TEXT -> message.text
+                                                com.familycalls.app.data.model.MessageType.IMAGE -> "📷 Image"
+                                                com.familycalls.app.data.model.MessageType.VIDEO -> "🎥 Video"
+                                            }
+                                            
+                                            if (messageText.isNotEmpty()) {
+                                                notificationManager.showMessageNotification(
+                                                    message.senderId,
+                                                    senderName,
+                                                    messageText
+                                                )
+                                                android.util.Log.d("MainActivity", "Message notification shown: $senderName - $messageText")
+                                            }
+                                        }
+                                        .addOnFailureListener { e ->
+                                            android.util.Log.e("MainActivity", "Failed to get sender info for message notification", e)
+                                        }
+                                    
+                                } catch (e: Exception) {
+                                    android.util.Log.e("MainActivity", "Error processing message document", e)
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.e("MainActivity", "Error in message listener callback", e)
+                    }
+                }
+            
+            android.util.Log.d("MainActivity", "Message listener registered successfully")
+        } catch (e: Exception) {
+            android.util.Log.e("MainActivity", "Error setting up message listener", e)
+        }
+    }
+    
+    override fun onDestroy() {
+        super.onDestroy()
+        // Remove message listener when activity is destroyed
+        messageListener?.remove()
+        messageListener = null
     }
     
     private fun startCall(contact: User) {
@@ -528,8 +829,312 @@ class MainActivity : AppCompatActivity() {
         startActivity(intent)
     }
     
+    private fun setupTabs() {
+        val tvChatsTab = findViewById<android.widget.TextView>(R.id.tvChatsTab)
+        val tvCallsTab = findViewById<android.widget.TextView>(R.id.tvCallsTab)
+        
+        tvChatsTab?.setOnClickListener {
+            switchTab(Tab.CHATS)
+        }
+        tvCallsTab?.setOnClickListener {
+            switchTab(Tab.CALLS)
+        }
+    }
+    
+    private fun switchTab(tab: Tab) {
+        currentTab = tab
+        val tvChatsTab = findViewById<android.widget.TextView>(R.id.tvChatsTab)
+        val tvCallsTab = findViewById<android.widget.TextView>(R.id.tvCallsTab)
+        
+        when (tab) {
+            Tab.CHATS -> {
+                // Active Chat Tab
+                tvChatsTab?.setTextColor(ContextCompat.getColor(this, R.color.ios_text_primary))
+                tvChatsTab?.background = ContextCompat.getDrawable(this, R.drawable.bg_button_rounded)
+                tvChatsTab?.backgroundTintList = android.content.res.ColorStateList.valueOf(ContextCompat.getColor(this, R.color.white))
+                tvChatsTab?.elevation = 4f
+                
+                // Inactive Calls Tab
+                tvCallsTab?.setTextColor(ContextCompat.getColor(this, R.color.ios_text_secondary))
+                tvCallsTab?.background = null
+                tvCallsTab?.elevation = 0f
+                
+                binding.recyclerViewContacts.visibility = View.VISIBLE
+                binding.recyclerViewCalls.visibility = View.GONE
+            }
+            Tab.CALLS -> {
+                // Inactive Chat Tab
+                tvChatsTab?.setTextColor(ContextCompat.getColor(this, R.color.ios_text_secondary))
+                tvChatsTab?.background = null
+                tvChatsTab?.elevation = 0f
+                
+                // Active Calls Tab
+                tvCallsTab?.setTextColor(ContextCompat.getColor(this, R.color.ios_text_primary))
+                tvCallsTab?.background = ContextCompat.getDrawable(this, R.drawable.bg_button_rounded)
+                tvCallsTab?.backgroundTintList = android.content.res.ColorStateList.valueOf(ContextCompat.getColor(this, R.color.white))
+                tvCallsTab?.elevation = 4f
+                
+                binding.recyclerViewContacts.visibility = View.GONE
+                binding.recyclerViewCalls.visibility = View.VISIBLE
+            }
+        }
+    }
+    
+    private fun loadCallHistory() {
+        if (currentUserId.isEmpty()) {
+            android.util.Log.w("MainActivity", "Cannot load call history: currentUserId is empty")
+            return
+        }
+        
+        try {
+            val callsCollection = FirebaseFirestore.getInstance().collection("calls")
+            var callsAsCaller = emptyList<CallHistoryItem>()
+            var callsAsReceiver = emptyList<CallHistoryItem>()
+            
+            fun updateCallList() {
+                try {
+                    val allCalls = (callsAsCaller + callsAsReceiver)
+                        .distinctBy { it.id }
+                        .sortedByDescending { it.timestamp }
+                    callsAdapter.submitList(allCalls, currentUserId)
+                } catch (e: Exception) {
+                    android.util.Log.e("MainActivity", "Error updating call list", e)
+                }
+            }
+            
+            // Get calls where current user is caller
+            callsCollection
+                .whereEqualTo("callerId", currentUserId)
+                .addSnapshotListener { snapshot1, error1 ->
+                    try {
+                        if (error1 != null) {
+                            android.util.Log.e("MainActivity", "Error loading calls as caller", error1)
+                            return@addSnapshotListener
+                        }
+                        
+                        if (snapshot1 != null) {
+                            callsAsCaller = snapshot1.documents.mapNotNull { doc ->
+                                try {
+                                    val data = doc.data
+                                    if (data != null) {
+                                        CallHistoryItem(
+                                            id = doc.id,
+                                            callerId = (data["callerId"] as? String)?.takeIf { it.isNotEmpty() } ?: "",
+                                            receiverId = (data["receiverId"] as? String)?.takeIf { it.isNotEmpty() } ?: "",
+                                            status = (data["status"] as? String)?.takeIf { it.isNotEmpty() } ?: "",
+                                            timestamp = (data["timestamp"] as? Long) ?: 0L
+                                        )
+                                    } else null
+                                } catch (e: Exception) {
+                                    android.util.Log.e("MainActivity", "Error parsing call document ${doc.id}", e)
+                                    null
+                                }
+                            }.filter { it.callerId.isNotEmpty() && it.receiverId.isNotEmpty() }
+                            updateCallList()
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.e("MainActivity", "Error in caller listener", e)
+                    }
+                }
+            
+            // Get calls where current user is receiver
+            callsCollection
+                .whereEqualTo("receiverId", currentUserId)
+                .addSnapshotListener { snapshot2, error2 ->
+                    try {
+                        if (error2 != null) {
+                            android.util.Log.e("MainActivity", "Error loading calls as receiver", error2)
+                            return@addSnapshotListener
+                        }
+                        
+                        if (snapshot2 != null) {
+                            callsAsReceiver = snapshot2.documents.mapNotNull { doc ->
+                                try {
+                                    val data = doc.data
+                                    if (data != null) {
+                                        CallHistoryItem(
+                                            id = doc.id,
+                                            callerId = (data["callerId"] as? String)?.takeIf { it.isNotEmpty() } ?: "",
+                                            receiverId = (data["receiverId"] as? String)?.takeIf { it.isNotEmpty() } ?: "",
+                                            status = (data["status"] as? String)?.takeIf { it.isNotEmpty() } ?: "",
+                                            timestamp = (data["timestamp"] as? Long) ?: 0L
+                                        )
+                                    } else null
+                                } catch (e: Exception) {
+                                    android.util.Log.e("MainActivity", "Error parsing call document ${doc.id}", e)
+                                    null
+                                }
+                            }.filter { it.callerId.isNotEmpty() && it.receiverId.isNotEmpty() }
+                            updateCallList()
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.e("MainActivity", "Error in receiver listener", e)
+                    }
+                }
+        } catch (e: Exception) {
+            android.util.Log.e("MainActivity", "Error in loadCallHistory()", e)
+            e.printStackTrace()
+        }
+    }
+    
+    data class CallHistoryItem(
+        val id: String,
+        val callerId: String,
+        val receiverId: String,
+        val status: String,
+        val timestamp: Long
+    )
+    
+    inner class CallHistoryAdapter : RecyclerView.Adapter<CallHistoryAdapter.CallViewHolder>() {
+        
+        private var calls = listOf<CallHistoryItem>()
+        private var currentUserId = ""
+        
+        fun submitList(newList: List<CallHistoryItem>, userId: String) {
+            calls = newList
+            currentUserId = userId
+            notifyDataSetChanged()
+        }
+        
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): CallViewHolder {
+            val view = LayoutInflater.from(parent.context)
+                .inflate(R.layout.item_call_history, parent, false)
+            return CallViewHolder(view)
+        }
+        
+        override fun onBindViewHolder(holder: CallViewHolder, position: Int) {
+            holder.bind(calls[position])
+        }
+        
+        override fun getItemCount() = calls.size
+        
+        inner class CallViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
+            private val ivAvatar = itemView.findViewById<android.widget.ImageView>(R.id.ivAvatar)
+            private val ivCallIcon = itemView.findViewById<android.widget.ImageView>(R.id.ivCallIcon)
+            private val tvCallerName = itemView.findViewById<android.widget.TextView>(R.id.tvCallerName)
+            private val tvCallTime = itemView.findViewById<android.widget.TextView>(R.id.tvCallTime)
+            private val tvCallDate = itemView.findViewById<android.widget.TextView>(R.id.tvCallDate)
+            
+            fun bind(call: CallHistoryItem) {
+                try {
+                    val isIncoming = call.receiverId == currentUserId
+                    val otherUserId = if (isIncoming) call.callerId else call.receiverId
+                    
+                    if (otherUserId.isEmpty()) {
+                        android.util.Log.w("CallHistoryAdapter", "Empty otherUserId for call ${call.id}")
+                        tvCallerName?.text = "Unknown"
+                        return
+                    }
+                    
+                    // Set default values first
+                    tvCallerName?.text = "Loading..."
+                    tvCallTime?.text = ""
+                    tvCallDate?.text = ""
+                    
+                    // Load user info and avatar
+                    FirebaseFirestore.getInstance().collection("users")
+                        .document(otherUserId)
+                        .get()
+                        .addOnSuccessListener { doc ->
+                            try {
+                                if (doc.exists() && doc.data != null) {
+                                    val user = doc.toObject(User::class.java)?.copy(id = doc.id)
+                                    user?.let {
+                                        tvCallerName?.text = it.name
+                                        
+                                        // Load avatar
+                                        if (it.avatarUrl.isNotEmpty()) {
+                                            ivAvatar?.let { avatarView ->
+                                                com.bumptech.glide.Glide.with(itemView.context)
+                                                    .load(it.avatarUrl)
+                                                    .circleCrop()
+                                                    .placeholder(android.R.drawable.sym_def_app_icon)
+                                                    .into(avatarView)
+                                            }
+                                        } else {
+                                            ivAvatar?.setImageResource(android.R.drawable.sym_def_app_icon)
+                                        }
+                                    } ?: run {
+                                        tvCallerName?.text = "Unknown"
+                                    }
+                                } else {
+                                    tvCallerName?.text = "Unknown"
+                                }
+                            } catch (e: Exception) {
+                                android.util.Log.e("CallHistoryAdapter", "Error loading user", e)
+                                tvCallerName?.text = "Unknown"
+                            }
+                        }
+                        .addOnFailureListener { e ->
+                            android.util.Log.e("CallHistoryAdapter", "Failed to load user $otherUserId", e)
+                            tvCallerName?.text = "Unknown"
+                        }
+                    
+                    // Set call icon based on status
+                    ivCallIcon?.let { icon ->
+                        when {
+                            call.status == "rejected" -> {
+                                icon.setImageResource(android.R.drawable.ic_menu_call)
+                                icon.setColorFilter(ContextCompat.getColor(itemView.context, android.R.color.holo_red_dark))
+                            }
+                            call.status == "accepted" -> {
+                                icon.setImageResource(android.R.drawable.ic_menu_call)
+                                icon.setColorFilter(ContextCompat.getColor(itemView.context, android.R.color.holo_green_dark))
+                            }
+                            call.status == "ringing" && isIncoming -> {
+                                // Missed call (was ringing but never accepted)
+                                icon.setImageResource(android.R.drawable.ic_menu_info_details)
+                                icon.setColorFilter(ContextCompat.getColor(itemView.context, android.R.color.holo_orange_dark))
+                            }
+                            else -> {
+                                icon.setImageResource(android.R.drawable.ic_menu_call)
+                                icon.setColorFilter(ContextCompat.getColor(itemView.context, android.R.color.holo_orange_dark))
+                            }
+                        }
+                    }
+                    
+                    // Format time and date
+                    val date = java.util.Date(call.timestamp)
+                    val now = java.util.Date()
+                    val diff = now.time - call.timestamp
+                    
+                    tvCallTime?.text = when {
+                        call.status == "rejected" -> "Rejected"
+                        call.status == "accepted" -> "Answered"
+                        call.status == "ringing" && isIncoming -> "Missed"
+                        else -> "Outgoing"
+                    }
+                    
+                    tvCallDate?.text = when {
+                        diff < 60000 -> "Just now"
+                        diff < 3600000 -> "${diff / 60000}m ago"
+                        diff < 86400000 -> "${diff / 3600000}h ago"
+                        diff < 604800000 -> "${diff / 86400000}d ago"
+                        else -> java.text.SimpleDateFormat("MMM dd", java.util.Locale.getDefault()).format(date)
+                    }
+                    
+                    // Click to call back
+                    itemView.setOnClickListener {
+                        try {
+                            val intent = Intent(this@MainActivity, VideoCallActivity::class.java).apply {
+                                putExtra("contactId", otherUserId)
+                            }
+                            this@MainActivity.startActivity(intent)
+                        } catch (e: Exception) {
+                            android.util.Log.e("CallHistoryAdapter", "Error starting VideoCallActivity", e)
+                        }
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("CallHistoryAdapter", "Error in bind()", e)
+                    e.printStackTrace()
+                }
+            }
+        }
+    }
+
     inner class ContactsAdapter(
-        private val onContactClick: (User) -> Unit
+        private val onContactClick: (User) -> Unit,
+        private val onVideoCallClick: (User) -> Unit
     ) : RecyclerView.Adapter<ContactsAdapter.ContactViewHolder>() {
         
         private var contacts = listOf<User>()
@@ -561,11 +1166,34 @@ class MainActivity : AppCompatActivity() {
             fun bind(user: User) {
                 binding.tvName.text = user.name
                 binding.tvPhone.text = user.phone
+                
+                // Load avatar
+                val cvAvatar = binding.root.findViewById<androidx.cardview.widget.CardView>(R.id.cvAvatar)
+                val ivAvatar = cvAvatar?.getChildAt(0) as? android.widget.ImageView
+                
+                if (user.avatarUrl.isNotEmpty()) {
+                    com.bumptech.glide.Glide.with(binding.root.context)
+                        .load(user.avatarUrl)
+                        .circleCrop()
+                        .placeholder(android.R.drawable.sym_def_app_icon)
+                        .into(ivAvatar ?: return)
+                    cvAvatar?.setCardBackgroundColor(android.graphics.Color.TRANSPARENT)
+                } else {
+                    ivAvatar?.setImageResource(android.R.drawable.sym_def_app_icon)
+                    ivAvatar?.setColorFilter(android.graphics.Color.WHITE)
+                    cvAvatar?.setCardBackgroundColor(0xFFE0E0E0.toInt())
+                }
+                
+                // Card click opens chat
                 binding.root.setOnClickListener {
                     onContactClick(user)
+                }
+                
+                // Video icon click starts video call
+                binding.ivVideoCall.setOnClickListener {
+                    onVideoCallClick(user)
                 }
             }
         }
     }
 }
-

@@ -27,6 +27,36 @@
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
+    <!-- Incoming call overlay - shows avatar and name -->
+    <ImageView
+        android:id="@+id/ivCallerAvatar"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:scaleType="centerCrop"
+        android:background="@android:color/black"
+        android:visibility="gone"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <TextView
+        android:id="@+id/tvCallerName"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Calling..."
+        android:textColor="@android:color/white"
+        android:textSize="32sp"
+        android:textStyle="bold"
+        android:padding="24dp"
+        android:background="#80000000"
+        android:elevation="4dp"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent"
+        android:layout_marginTop="64dp"
+        android:visibility="gone" />
+
     <TextView
         android:id="@+id/tvCallStatus"
         android:layout_width="wrap_content"
@@ -52,39 +82,52 @@
         app:layout_constraintBottom_toBottomOf="parent"
         android:layout_marginBottom="32dp">
 
-        <Button
+        <ImageButton
             android:id="@+id/btnAccept"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/accept"
-            android:backgroundTint="@android:color/holo_green_dark"
-            android:layout_margin="8dp"
+            android:layout_width="72dp"
+            android:layout_height="72dp"
+            android:src="@drawable/ic_call_accept"
+            android:background="@drawable/bg_button_round_green"
+            android:scaleType="centerInside"
+            android:padding="16dp"
+            android:layout_margin="12dp"
+            android:contentDescription="@string/accept"
             android:visibility="gone" />
 
-        <Button
+        <ImageButton
             android:id="@+id/btnReject"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/reject"
-            android:backgroundTint="@android:color/holo_red_dark"
-            android:layout_margin="8dp"
+            android:layout_width="72dp"
+            android:layout_height="72dp"
+            android:src="@drawable/ic_call_end"
+            android:background="@drawable/bg_button_round_red"
+            android:scaleType="centerInside"
+            android:padding="16dp"
+            android:layout_margin="12dp"
+            android:contentDescription="@string/reject"
             android:visibility="gone" />
 
-        <Button
+        <ImageButton
             android:id="@+id/btnMute"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/mute"
-            android:layout_margin="8dp"
+            android:layout_width="72dp"
+            android:layout_height="72dp"
+            android:src="@drawable/ic_mic"
+            android:background="@drawable/bg_button_round_white"
+            android:scaleType="centerInside"
+            android:padding="16dp"
+            android:layout_margin="12dp"
+            android:contentDescription="@string/mute"
             android:visibility="gone" />
 
-        <Button
+        <ImageButton
             android:id="@+id/btnHangUp"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/hang_up"
-            android:backgroundTint="@android:color/holo_red_dark"
-            android:layout_margin="8dp"
+            android:layout_width="72dp"
+            android:layout_height="72dp"
+            android:src="@drawable/ic_call_end"
+            android:background="@drawable/bg_button_round_red"
+            android:scaleType="centerInside"
+            android:padding="16dp"
+            android:layout_margin="12dp"
+            android:contentDescription="@string/hang_up"
             android:visibility="gone" />
 
     </LinearLayout>

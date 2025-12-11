@@ -34,6 +34,7 @@ class VideoCallActivity : AppCompatActivity() {
     private var contactPhone: String = ""
     private var isIncoming: Boolean = false
     private var isMuted: Boolean = false
+    private var isCallEnding: Boolean = false // Track if call is ending to prevent message override
     
     // Agora RTC Engine
     private var agoraEngine: RtcEngine? = null
@@ -43,6 +44,8 @@ class VideoCallActivity : AppCompatActivity() {
     
     private val db = FirebaseFirestore.getInstance()
     private val callsCollection = db.collection("calls")
+    private var callStatusListener: com.google.firebase.firestore.ListenerRegistration? = null
+    private var currentCallDocumentId: String? = null // Track the current call document ID
     
     companion object {
         private const val PERMISSION_REQUEST_CODE = 100
@@ -171,6 +174,9 @@ class VideoCallActivity : AppCompatActivity() {
                     android.util.Log.d("Agora", "onUserJoined: uid=$uid")
                     runOnUiThread {
                         setupRemoteVideo(uid)
+                        // Hide avatar when video starts, show video view
+                        binding.ivCallerAvatar.visibility = View.GONE
+                        binding.remoteVideoView.visibility = View.VISIBLE
                         binding.tvCallStatus.text = "$contactName joined"
                     }
                 }
@@ -178,7 +184,10 @@ class VideoCallActivity : AppCompatActivity() {
                 override fun onUserOffline(uid: Int, reason: Int) {
                     android.util.Log.d("Agora", "onUserOffline: uid=$uid, reason=$reason")
                     runOnUiThread {
-                        binding.tvCallStatus.text = "$contactName left"
+                        // Don't override "The call was ended" message if call is already ending
+                        if (!isCallEnding) {
+                            binding.tvCallStatus.text = "$contactName left"
+                        }
                     }
                 }
                 
@@ -517,14 +526,79 @@ class VideoCallActivity : AppCompatActivity() {
     */
     
     private fun showIncomingCallUI() {
-        binding.tvCallStatus.text = "Incoming call from $contactName"
+        // Hide status text, show caller name and avatar instead
+        binding.tvCallStatus.visibility = View.GONE
+        binding.tvCallerName.visibility = View.VISIBLE
+        binding.tvCallerName.text = contactName
+        
+        // Show avatar in full screen
+        binding.ivCallerAvatar.visibility = View.VISIBLE
+        binding.remoteVideoView.visibility = View.GONE
+        binding.localVideoView.visibility = View.GONE
+        
+        // Load caller's avatar
+        loadCallerAvatar()
+        
         binding.btnAccept.visibility = View.VISIBLE
         binding.btnReject.visibility = View.VISIBLE
         binding.btnHangUp.visibility = View.GONE
         binding.btnMute.visibility = View.GONE
         
+        // Find the call document ID for incoming calls
+        findIncomingCallDocument()
+        
         // Listen for call acceptance/rejection
         listenForCallResponse()
+    }
+    
+    private fun loadCallerAvatar() {
+        if (contactId.isEmpty()) return
+        
+        com.google.firebase.firestore.FirebaseFirestore.getInstance()
+            .collection("users")
+            .document(contactId)
+            .get()
+            .addOnSuccessListener { doc ->
+                if (doc.exists()) {
+                    val avatarUrl = doc.getString("avatarUrl")
+                    if (!avatarUrl.isNullOrEmpty()) {
+                        com.bumptech.glide.Glide.with(this)
+                            .load(avatarUrl)
+                            .centerCrop()
+                            .placeholder(android.R.drawable.sym_def_app_icon)
+                            .into(binding.ivCallerAvatar)
+                    } else {
+                        // Show default avatar
+                        binding.ivCallerAvatar.setImageResource(android.R.drawable.sym_def_app_icon)
+                    }
+                }
+            }
+            .addOnFailureListener { e ->
+                android.util.Log.e("VideoCallActivity", "Failed to load caller avatar", e)
+                binding.ivCallerAvatar.setImageResource(android.R.drawable.sym_def_app_icon)
+            }
+    }
+    
+    private fun findIncomingCallDocument() {
+        // For incoming calls, find the existing call document
+        callsCollection
+            .whereEqualTo("callerId", contactId)
+            .whereEqualTo("receiverId", currentUserId)
+            .whereEqualTo("status", "ringing")
+            .limit(1)
+            .get()
+            .addOnSuccessListener { snapshot ->
+                val document = snapshot.documents.firstOrNull()
+                if (document != null) {
+                    currentCallDocumentId = document.id
+                    android.util.Log.d("VideoCallActivity", "Found incoming call document ID: ${document.id}")
+                } else {
+                    android.util.Log.w("VideoCallActivity", "Could not find incoming call document")
+                }
+            }
+            .addOnFailureListener { e ->
+                android.util.Log.e("VideoCallActivity", "Error finding incoming call document", e)
+            }
     }
     
     private fun startOutgoingCall() {
@@ -534,7 +608,7 @@ class VideoCallActivity : AppCompatActivity() {
         binding.btnHangUp.visibility = View.VISIBLE
         binding.btnMute.visibility = View.VISIBLE
         
-        // Create call document
+        // Create call document (listener will be set up after document is created)
         createCallDocument()
     }
     
@@ -560,9 +634,13 @@ class VideoCallActivity : AppCompatActivity() {
         
         callsCollection.add(callData)
             .addOnSuccessListener { documentReference ->
+                currentCallDocumentId = documentReference.id
                 android.util.Log.d("VideoCallActivity", "✓ Call document created successfully!")
                 android.util.Log.d("VideoCallActivity", "  Document ID: ${documentReference.id}")
                 android.util.Log.d("VideoCallActivity", "  The receiver's MainActivity listener should detect this now")
+                
+                // Start listening for call end only after we have the document ID
+                listenForCallEnd()
             }
             .addOnFailureListener { e ->
                 android.util.Log.e("VideoCallActivity", "✗ Failed to create call document", e)
@@ -600,14 +678,24 @@ class VideoCallActivity : AppCompatActivity() {
     }
     
     private fun acceptCall() {
+        // Hide incoming call UI, show video views
+        binding.ivCallerAvatar.visibility = View.GONE
+        binding.tvCallerName.visibility = View.GONE
+        binding.tvCallStatus.visibility = View.VISIBLE
+        binding.remoteVideoView.visibility = View.VISIBLE
+        binding.localVideoView.visibility = View.VISIBLE
+        
         binding.btnAccept.visibility = View.GONE
         binding.btnReject.visibility = View.GONE
         binding.btnHangUp.visibility = View.VISIBLE
         binding.btnMute.visibility = View.VISIBLE
         binding.tvCallStatus.text = "Connecting..."
         
-        // Update call status
-        updateCallStatus("accepted")
+        // Update call status and get the call document ID
+        updateCallStatus("accepted") {
+            // Start listening for call status changes after we have the document ID
+            listenForCallEnd()
+        }
         
         // Check permissions first, then initialize Agora and join channel
         val permissions = arrayOf(
@@ -632,11 +720,20 @@ class VideoCallActivity : AppCompatActivity() {
     }
     
     private fun rejectCall() {
+        // Remove listener first
+        callStatusListener?.remove()
+        callStatusListener = null
+        
         updateCallStatus("rejected")
+        cleanup()
         finish()
     }
     
     private fun hangUp() {
+        // Remove listener first so we don't trigger our own "call ended" message
+        callStatusListener?.remove()
+        callStatusListener = null
+        
         updateCallStatus("ended")
         cleanup()
         finish()
@@ -645,20 +742,109 @@ class VideoCallActivity : AppCompatActivity() {
     private fun toggleMute() {
         isMuted = !isMuted
         agoraEngine?.muteLocalAudioStream(isMuted)
-        binding.btnMute.text = if (isMuted) getString(R.string.unmute) else getString(R.string.mute)
+        binding.btnMute.setImageResource(
+            if (isMuted) R.drawable.ic_mic_off 
+            else R.drawable.ic_mic
+        )
+        // Change background color when muted
+        binding.btnMute.background = ContextCompat.getDrawable(
+            this,
+            if (isMuted) R.drawable.bg_button_round_red
+            else R.drawable.bg_button_round_white
+        )
     }
     
-    private fun updateCallStatus(status: String) {
+    private fun updateCallStatus(status: String, onComplete: (() -> Unit)? = null) {
         callsCollection
             .whereEqualTo("callerId", if (isIncoming) contactId else currentUserId)
             .whereEqualTo("receiverId", if (isIncoming) currentUserId else contactId)
             .get()
             .addOnSuccessListener { snapshot ->
-                snapshot.documents.firstOrNull()?.reference?.update("status", status)
+                val document = snapshot.documents.firstOrNull()
+                if (document != null) {
+                    // Store the call document ID if we don't have it yet
+                    if (currentCallDocumentId == null) {
+                        currentCallDocumentId = document.id
+                        android.util.Log.d("VideoCallActivity", "Stored call document ID: ${document.id}")
+                    }
+                    document.reference.update("status", status)
+                        .addOnSuccessListener {
+                            onComplete?.invoke()
+                        }
+                } else {
+                    android.util.Log.w("VideoCallActivity", "No call document found to update")
+                    onComplete?.invoke()
+                }
+            }
+            .addOnFailureListener { e ->
+                android.util.Log.e("VideoCallActivity", "Failed to find call document", e)
+                onComplete?.invoke()
             }
     }
     
+    private fun listenForCallEnd() {
+        // Don't listen if we don't have a call document ID yet
+        val callDocId = currentCallDocumentId
+        if (callDocId == null) {
+            android.util.Log.w("VideoCallActivity", "Cannot listen for call end: no call document ID yet")
+            return
+        }
+        
+        // Remove existing listener if any
+        callStatusListener?.remove()
+        
+        // Listen to the specific call document
+        callStatusListener = callsCollection.document(callDocId)
+            .addSnapshotListener { documentSnapshot, error ->
+                if (error != null) {
+                    android.util.Log.e("VideoCallActivity", "Error listening for call status", error)
+                    return@addSnapshotListener
+                }
+                
+                if (documentSnapshot != null && documentSnapshot.exists()) {
+                    val status = documentSnapshot.getString("status") ?: ""
+                    android.util.Log.d("VideoCallActivity", "Call status changed: $status")
+                    
+                    // Only react to status changes (not initial snapshot) and only if status is "ended"
+                    // We check document metadata to see if this is a new change
+                    if (status == "ended" && !documentSnapshot.metadata.isFromCache) {
+                        android.util.Log.d("VideoCallActivity", "Call was ended by the other user")
+                        isCallEnding = true // Set flag to prevent Agora callbacks from overriding message
+                        runOnUiThread {
+                            // Hide video views, show message
+                            binding.ivCallerAvatar.visibility = View.GONE
+                            binding.remoteVideoView.visibility = View.GONE
+                            binding.localVideoView.visibility = View.GONE
+                            binding.tvCallerName.visibility = View.GONE
+                            binding.tvCallStatus.visibility = View.VISIBLE
+                            binding.tvCallStatus.text = "The call was ended"
+                            
+                            // Wait a moment to show the message, then finish
+                            binding.root.postDelayed({
+                                if (!isFinishing && !isActivityDestroyed()) {
+                                    cleanup()
+                                    finish()
+                                }
+                            }, 2000) // Show message for 2 seconds
+                        }
+                    }
+                }
+            }
+    }
+    
+    private fun isActivityDestroyed(): Boolean {
+        return if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.JELLY_BEAN_MR1) {
+            isDestroyed
+        } else {
+            false
+        }
+    }
+    
     private fun cleanup() {
+        // Remove call status listener
+        callStatusListener?.remove()
+        callStatusListener = null
+        
         // Leave channel and cleanup Agora
         agoraEngine?.leaveChannel()
         agoraEngine?.stopPreview()
