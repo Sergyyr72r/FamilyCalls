@@ -1,0 +1,30 @@
+<resources>
+    <string name="app_name">Family Calls</string>
+    <string name="enter_name">Enter your name</string>
+    <string name="enter_phone">Enter your phone number</string>
+    <string name="register">Register</string>
+    <string name="contacts">Contacts</string>
+    <string name="messages">Messages</string>
+    <string name="type_message">Type a message...</string>
+    <string name="send">Send</string>
+    <string name="call">Call</string>
+    <string name="message">Message</string>
+    <string name="incoming_call">Incoming Call</string>
+    <string name="accept">Accept</string>
+ <string name="reject">Reject</string>
+    <string name="mute">Mute</string>
+    <string name="unmute">Unmute</string>
+    <string name="hang_up">Hang Up</string>
+    <string name="calling">Calling...</string>
+    <string name="no_contacts">No contacts yet</string>
+    <string name="select_image">Select Image</string>
+    <string name="select_video">Select Video</string>
+    <string name="camera">Camera</string>
+    <string name="gallery">Gallery</string>
+    <string name="cancel">Cancel</string>
+    <string name="permission_required">Permission required</string>
+    <string name="camera_permission">Camera permission is required for video calls</string>
+    <string name="audio_permission">Audio permission is required for calls</string>
+    <string name="storage_permission">Storage permission is required to send media</string>
+</resources>
+
