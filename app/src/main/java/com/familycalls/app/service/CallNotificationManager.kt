@@ -72,6 +72,13 @@ class CallNotificationManager(private val context: Context) {
                     // Important: Set lockscreen visibility
                     lockscreenVisibility = Notification.VISIBILITY_PUBLIC
                 }
+                
+                // For Android 11+ (API 30+), we need to set canBubble and allow full-screen intents
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    // Allow full-screen intents for this channel
+                    channel.setAllowBubbles(false) // Bubbles not needed
+                }
+                
                 notificationManager.createNotificationChannel(channel)
                 
                 android.util.Log.d("CallNotificationManager", "Notification channel created/updated: $CHANNEL_ID")
@@ -123,6 +130,7 @@ class CallNotificationManager(private val context: Context) {
     ): Notification {
         // Content intent (opens VideoCallActivity when notification body is tapped)
         // Note: We don't auto-open the activity - user must tap Accept button
+        // Add flags to wake screen and show on locked screen
         val contentIntent = Intent(context, VideoCallActivity::class.java).apply {
             putExtra("contactId", callerId)
             putExtra("contactName", callerName)
@@ -130,7 +138,8 @@ class CallNotificationManager(private val context: Context) {
             putExtra("isIncoming", true)
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or 
                     Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                    Intent.FLAG_ACTIVITY_CLEAR_TASK
         }
         
         val contentPendingIntent = PendingIntent.getActivity(
@@ -174,17 +183,22 @@ class CallNotificationManager(private val context: Context) {
         // This will appear as a popup at the bottom of the screen
         val soundUri = android.provider.Settings.System.DEFAULT_RINGTONE_URI
         
-        return NotificationCompat.Builder(context, CHANNEL_ID)
+        android.util.Log.d("CallNotificationManager", "Creating notification with full-screen intent for: $callerName")
+        android.util.Log.d("CallNotificationManager", "Content intent flags: ${contentPendingIntent.intentSender}")
+        android.util.Log.d("CallNotificationManager", "Target activity: VideoCallActivity")
+        
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setCategory(NotificationCompat.CATEGORY_CALL) // Call category triggers call UI
             .setSmallIcon(android.R.drawable.ic_menu_call) // System call icon
             .setContentTitle("Incoming Video Call")
             .setContentText("$callerName is calling...")
-            .setPriority(NotificationCompat.PRIORITY_HIGH) // Required for heads-up notification
+            .setPriority(NotificationCompat.PRIORITY_MAX) // MAX priority for urgent calls
             .setContentIntent(contentPendingIntent) // Opens activity when notification body is tapped
             // Full-screen intent is required for lock screen support
             // The intent opens VideoCallActivity with isIncoming=true, which shows Accept/Reject buttons
             // It does NOT auto-accept - user must tap the Accept button
-            .setFullScreenIntent(contentPendingIntent, true) // Required for lock screen, shows incoming UI only
+            // Set to true to wake screen even when device is locked/off
+            .setFullScreenIntent(contentPendingIntent, true) // Required for lock screen, wakes screen
             .setOngoing(true) // Can't be dismissed easily
             .setAutoCancel(false)
             .setDefaults(NotificationCompat.DEFAULT_ALL) // Sound, vibration, lights
@@ -209,6 +223,11 @@ class CallNotificationManager(private val context: Context) {
             .setTimeoutAfter(60000) // Auto-dismiss after 60 seconds if not answered
             .setShowWhen(false) // Don't show timestamp
             .build()
+        
+        android.util.Log.d("CallNotificationManager", "Notification built with full-screen intent")
+        android.util.Log.d("CallNotificationManager", "Priority: MAX, Category: CALL, FullScreenIntent: true")
+        
+        return notification
     }
     
     fun cancelNotification() {

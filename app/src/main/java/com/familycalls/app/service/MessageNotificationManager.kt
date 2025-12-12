@@ -98,3 +98,4 @@ class MessageNotificationManager(private val context: Context) {
         notificationManager.cancel(notificationId)
     }
 }
+

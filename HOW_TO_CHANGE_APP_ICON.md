@@ -132,3 +132,4 @@ Ensure your `AndroidManifest.xml` references the icon:
 - Check that XML files are valid
 - Ensure all referenced drawables exist
 - Clean and rebuild project
+

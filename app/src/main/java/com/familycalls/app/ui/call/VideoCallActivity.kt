@@ -54,19 +54,27 @@ class VideoCallActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        // Wake up screen
+        android.util.Log.d("VideoCallActivity", "=== onCreate called ===")
+        android.util.Log.d("VideoCallActivity", "Intent action: ${intent.action}")
+        android.util.Log.d("VideoCallActivity", "Intent extras: ${intent.extras?.keySet()}")
+        
+        // Wake up screen - CRITICAL for full-screen notifications
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
+            android.util.Log.d("VideoCallActivity", "Setting screen wake flags (API 27+)")
             setShowWhenLocked(true)
             setTurnScreenOn(true)
             val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as android.app.KeyguardManager
             keyguardManager.requestDismissKeyguard(this, null)
+            android.util.Log.d("VideoCallActivity", "Screen wake flags set: showWhenLocked=true, turnScreenOn=true")
         } else {
+            android.util.Log.d("VideoCallActivity", "Setting screen wake flags (pre-API 27)")
             window.addFlags(
                 android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
                 android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
                 android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
                 android.view.WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
             )
+            android.util.Log.d("VideoCallActivity", "Window flags set for screen wake")
         }
         
         binding = ActivityVideoCallBinding.inflate(layoutInflater)
