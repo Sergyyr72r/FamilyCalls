@@ -19,12 +19,23 @@ class AuthActivity : AppCompatActivity() {
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        binding = ActivityAuthBinding.inflate(layoutInflater)
-        setContentView(binding.root)
         
         prefs = getSharedPreferences("FamilyCalls", MODE_PRIVATE)
         
-        // Check if user is already registered
+        // CRITICAL: Check if user is already logged in SYNCHRONOUSLY before showing UI
+        // This prevents the login screen from flashing briefly for logged-in users
+        val userId = prefs.getString("userId", "") ?: ""
+        if (userId.isNotEmpty()) {
+            // User is already logged in, navigate immediately without showing AuthActivity UI
+            navigateToMain()
+            return
+        }
+        
+        // Only show the login UI if no user is logged in
+        binding = ActivityAuthBinding.inflate(layoutInflater)
+        setContentView(binding.root)
+        
+        // Additional check: verify user exists in Firestore (async backup)
         val deviceId = authRepository.getDeviceId(this)
         lifecycleScope.launch {
             val currentUser = authRepository.getCurrentUser(deviceId)

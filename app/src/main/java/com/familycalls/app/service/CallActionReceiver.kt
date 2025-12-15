@@ -13,10 +13,23 @@ class CallActionReceiver : BroadcastReceiver() {
     private val callsCollection = db.collection("calls")
     
     override fun onReceive(context: Context, intent: Intent) {
-        val action = intent.action
-        val contactId = intent.getStringExtra("contactId") ?: return
+        Log.d("CallActionReceiver", "=== onReceive called ===")
+        Log.d("CallActionReceiver", "Action: ${intent.action}")
+        Log.d("CallActionReceiver", "Extras: ${intent.extras?.keySet()}")
+        
+        val action = intent.action ?: run {
+            Log.e("CallActionReceiver", "No action in intent!")
+            return
+        }
+        
+        val contactId = intent.getStringExtra("contactId") ?: run {
+            Log.e("CallActionReceiver", "No contactId in intent!")
+            return
+        }
         val contactName = intent.getStringExtra("contactName") ?: ""
         val contactPhone = intent.getStringExtra("contactPhone") ?: ""
+        
+        Log.d("CallActionReceiver", "Processing action: $action for contact: $contactName ($contactId)")
         
         // Cancel the notification
         CallNotificationManager(context).cancelNotification()
@@ -31,12 +44,13 @@ class CallActionReceiver : BroadcastReceiver() {
                 // Update call status in Firestore
                 updateCallStatus(context, contactId, "accepted")
                 
-                // Open VideoCallActivity
+                // Open VideoCallActivity and auto-accept (user already pressed Accept button)
                 val callIntent = Intent(context, VideoCallActivity::class.java).apply {
                     putExtra("contactId", contactId)
                     putExtra("contactName", contactName)
                     putExtra("contactPhone", contactPhone)
                     putExtra("isIncoming", true)
+                    putExtra("autoAccept", true) // Flag to auto-accept when opened
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
                 }
                 context.startActivity(callIntent)
@@ -45,7 +59,21 @@ class CallActionReceiver : BroadcastReceiver() {
             CallNotificationManager.ACTION_REJECT -> {
                 Log.d("CallActionReceiver", "Call rejected: $contactName")
                 
-                // Update call status in Firestore
+                // Close any VideoCallActivity that might be open (from full-screen notification)
+                val closeIntent = Intent(context, VideoCallActivity::class.java).apply {
+                    this.action = "com.familycalls.app.ACTION_CLOSE"
+                    this.flags = Intent.FLAG_ACTIVITY_NEW_TASK or 
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP
+                }
+                context.startActivity(closeIntent)
+                
+                // Stop CallService to stop ringtone and vibration
+                val serviceIntent = Intent(context, CallService::class.java)
+                serviceIntent.action = CallService.ACTION_END_CALL
+                context.startService(serviceIntent)
+                
+                // Update call status in Firestore (this will notify the caller)
                 updateCallStatus(context, contactId, "rejected")
             }
         }

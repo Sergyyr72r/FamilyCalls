@@ -35,6 +35,7 @@ class VideoCallActivity : AppCompatActivity() {
     private var isIncoming: Boolean = false
     private var isMuted: Boolean = false
     private var isCallEnding: Boolean = false // Track if call is ending to prevent message override
+    private var previousCallStatus: String? = null // Track previous status to detect changes
     
     // Agora RTC Engine
     private var agoraEngine: RtcEngine? = null
@@ -57,6 +58,13 @@ class VideoCallActivity : AppCompatActivity() {
         android.util.Log.d("VideoCallActivity", "=== onCreate called ===")
         android.util.Log.d("VideoCallActivity", "Intent action: ${intent.action}")
         android.util.Log.d("VideoCallActivity", "Intent extras: ${intent.extras?.keySet()}")
+        
+        // Check if this is a close action from reject button
+        if (intent.action == "com.familycalls.app.ACTION_CLOSE") {
+            android.util.Log.d("VideoCallActivity", "Close action received - finishing activity")
+            finish()
+            return
+        }
         
         // Wake up screen - CRITICAL for full-screen notifications
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
@@ -88,13 +96,21 @@ class VideoCallActivity : AppCompatActivity() {
         contactName = intent.getStringExtra("contactName") ?: ""
         contactPhone = intent.getStringExtra("contactPhone") ?: ""
         isIncoming = intent.getBooleanExtra("isIncoming", false)
+        val autoAccept = intent.getBooleanExtra("autoAccept", false)
         
         setupButtons()
         
         if (isIncoming) {
-            // For incoming calls, show UI but do NOT initialize Agora or check permissions yet
-            // Wait for user to explicitly tap Accept button
-            showIncomingCallUI()
+            if (autoAccept) {
+                // User already pressed Accept button from notification - auto-accept the call
+                android.util.Log.d("VideoCallActivity", "Auto-accepting call (from notification Accept button)")
+                acceptCall()
+                checkPermissions()
+            } else {
+                // For incoming calls, show UI but do NOT initialize Agora or check permissions yet
+                // Wait for user to explicitly tap Accept button
+                showIncomingCallUI()
+            }
         } else {
             // For outgoing calls, start the call immediately
             startOutgoingCall()
@@ -191,11 +207,10 @@ class VideoCallActivity : AppCompatActivity() {
                 
                 override fun onUserOffline(uid: Int, reason: Int) {
                     android.util.Log.d("Agora", "onUserOffline: uid=$uid, reason=$reason")
+                    // Don't show "left" message - the Firestore status change listener will handle call end
+                    // This just means they left the channel, but we wait for Firestore status update
                     runOnUiThread {
-                        // Don't override "The call was ended" message if call is already ending
-                        if (!isCallEnding) {
-                            binding.tvCallStatus.text = "$contactName left"
-                        }
+                        android.util.Log.d("VideoCallActivity", "User left channel, waiting for Firestore status update")
                     }
                 }
                 
@@ -742,9 +757,22 @@ class VideoCallActivity : AppCompatActivity() {
         callStatusListener?.remove()
         callStatusListener = null
         
-        updateCallStatus("ended")
-        cleanup()
-        finish()
+        // Update status and wait for it to complete before finishing
+        // This ensures the other user's listener detects the status change
+        updateCallStatus("ended") {
+            android.util.Log.d("VideoCallActivity", "Call status updated to 'ended', cleaning up and finishing")
+            cleanup()
+            finish()
+        }
+        
+        // If update fails or takes too long, still cleanup and finish after a delay
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            if (!isFinishing && !isActivityDestroyed()) {
+                android.util.Log.w("VideoCallActivity", "Status update timeout - cleaning up anyway")
+                cleanup()
+                finish()
+            }
+        }, 2000) // 2 second timeout
     }
     
     private fun toggleMute() {
@@ -763,11 +791,16 @@ class VideoCallActivity : AppCompatActivity() {
     }
     
     private fun updateCallStatus(status: String, onComplete: (() -> Unit)? = null) {
+        android.util.Log.d("VideoCallActivity", "updateCallStatus: updating to '$status'")
+        android.util.Log.d("VideoCallActivity", "  callerId: ${if (isIncoming) contactId else currentUserId}")
+        android.util.Log.d("VideoCallActivity", "  receiverId: ${if (isIncoming) currentUserId else contactId}")
+        
         callsCollection
             .whereEqualTo("callerId", if (isIncoming) contactId else currentUserId)
             .whereEqualTo("receiverId", if (isIncoming) currentUserId else contactId)
             .get()
             .addOnSuccessListener { snapshot ->
+                android.util.Log.d("VideoCallActivity", "updateCallStatus: query returned ${snapshot.documents.size} documents")
                 val document = snapshot.documents.firstOrNull()
                 if (document != null) {
                     // Store the call document ID if we don't have it yet
@@ -775,69 +808,163 @@ class VideoCallActivity : AppCompatActivity() {
                         currentCallDocumentId = document.id
                         android.util.Log.d("VideoCallActivity", "Stored call document ID: ${document.id}")
                     }
+                    val docId = document.id
+                    val currentStatus = document.getString("status") ?: "unknown"
+                    android.util.Log.d("VideoCallActivity", "updateCallStatus: updating document $docId from '$currentStatus' to '$status'")
+                    
                     document.reference.update("status", status)
                         .addOnSuccessListener {
+                            android.util.Log.d("VideoCallActivity", "✓ Status successfully updated to '$status' in Firestore")
+                            onComplete?.invoke()
+                        }
+                        .addOnFailureListener { e ->
+                            android.util.Log.e("VideoCallActivity", "✗ Failed to update status to '$status'", e)
                             onComplete?.invoke()
                         }
                 } else {
-                    android.util.Log.w("VideoCallActivity", "No call document found to update")
+                    android.util.Log.w("VideoCallActivity", "✗ No call document found to update")
                     onComplete?.invoke()
                 }
             }
             .addOnFailureListener { e ->
-                android.util.Log.e("VideoCallActivity", "Failed to find call document", e)
+                android.util.Log.e("VideoCallActivity", "✗ Failed to find call document", e)
+                e.printStackTrace()
                 onComplete?.invoke()
             }
     }
     
     private fun listenForCallEnd() {
-        // Don't listen if we don't have a call document ID yet
-        val callDocId = currentCallDocumentId
-        if (callDocId == null) {
-            android.util.Log.w("VideoCallActivity", "Cannot listen for call end: no call document ID yet")
-            return
-        }
-        
         // Remove existing listener if any
         callStatusListener?.remove()
         
-        // Listen to the specific call document
-        callStatusListener = callsCollection.document(callDocId)
-            .addSnapshotListener { documentSnapshot, error ->
-                if (error != null) {
-                    android.util.Log.e("VideoCallActivity", "Error listening for call status", error)
-                    return@addSnapshotListener
+        // Reset previousCallStatus so the new listener can initialize from current document state
+        previousCallStatus = null
+        android.util.Log.d("VideoCallActivity", "listenForCallEnd: Reset previousCallStatus to null for fresh listener setup")
+        
+        val callerId = if (isIncoming) contactId else currentUserId
+        val receiverId = if (isIncoming) currentUserId else contactId
+        
+        android.util.Log.d("VideoCallActivity", "listenForCallEnd: Setting up listener for callerId=$callerId, receiverId=$receiverId, currentCallDocumentId=$currentCallDocumentId")
+        android.util.Log.d("VideoCallActivity", "listenForCallEnd: isIncoming=$isIncoming")
+        
+        // Use document listener if we have the document ID, otherwise use query listener
+        callStatusListener = if (currentCallDocumentId != null) {
+            // Listen to the specific call document (more efficient)
+            android.util.Log.d("VideoCallActivity", "Using document listener with ID: ${currentCallDocumentId}")
+            callsCollection.document(currentCallDocumentId!!)
+                .addSnapshotListener { documentSnapshot, error ->
+                    handleCallStatusChange(documentSnapshot, error)
                 }
-                
-                if (documentSnapshot != null && documentSnapshot.exists()) {
-                    val status = documentSnapshot.getString("status") ?: ""
-                    android.util.Log.d("VideoCallActivity", "Call status changed: $status")
+        } else {
+            // Use query listener to find and monitor the call document
+            android.util.Log.d("VideoCallActivity", "Using query listener (document ID not yet available)")
+            callsCollection
+                .whereEqualTo("callerId", callerId)
+                .whereEqualTo("receiverId", receiverId)
+                .limit(1)
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        android.util.Log.e("VideoCallActivity", "Error in query listener for call status", error)
+                        return@addSnapshotListener
+                    }
                     
-                    // Only react to status changes (not initial snapshot) and only if status is "ended"
-                    // We check document metadata to see if this is a new change
-                    if (status == "ended" && !documentSnapshot.metadata.isFromCache) {
-                        android.util.Log.d("VideoCallActivity", "Call was ended by the other user")
-                        isCallEnding = true // Set flag to prevent Agora callbacks from overriding message
-                        runOnUiThread {
-                            // Hide video views, show message
-                            binding.ivCallerAvatar.visibility = View.GONE
-                            binding.remoteVideoView.visibility = View.GONE
-                            binding.localVideoView.visibility = View.GONE
-                            binding.tvCallerName.visibility = View.GONE
-                            binding.tvCallStatus.visibility = View.VISIBLE
-                            binding.tvCallStatus.text = "The call was ended"
-                            
-                            // Wait a moment to show the message, then finish
-                            binding.root.postDelayed({
-                                if (!isFinishing && !isActivityDestroyed()) {
-                                    cleanup()
-                                    finish()
-                                }
-                            }, 2000) // Show message for 2 seconds
+                    // Handle document changes in the query snapshot
+                    snapshot?.documentChanges?.forEach { change ->
+                        android.util.Log.d("VideoCallActivity", "Query listener: document change type=${change.type}, docId=${change.document.id}")
+                        val document = change.document
+                        if (currentCallDocumentId == null) {
+                            currentCallDocumentId = document.id
+                            android.util.Log.d("VideoCallActivity", "Stored call document ID from query: ${document.id}")
                         }
+                        handleCallStatusChange(document, error)
+                    }
+                    
+                    // Also handle if document exists but no changes were detected (initial state)
+                    val document = snapshot?.documents?.firstOrNull()
+                    if (document != null && snapshot.documentChanges.isEmpty()) {
+                        android.util.Log.d("VideoCallActivity", "Query listener: processing initial document state (no changes detected)")
+                        if (currentCallDocumentId == null) {
+                            currentCallDocumentId = document.id
+                            android.util.Log.d("VideoCallActivity", "Stored call document ID from query: ${document.id}")
+                        }
+                        handleCallStatusChange(document, error)
                     }
                 }
+        }
+    }
+    
+    private fun handleCallStatusChange(documentSnapshot: com.google.firebase.firestore.DocumentSnapshot?, error: Exception?) {
+        if (error != null) {
+            android.util.Log.e("VideoCallActivity", "Error listening for call status", error)
+            return
+        }
+        
+        if (documentSnapshot != null && documentSnapshot.exists()) {
+            val status = documentSnapshot.getString("status") ?: ""
+            val isFromCache = documentSnapshot.metadata.isFromCache
+            val documentId = documentSnapshot.id
+            android.util.Log.d("VideoCallActivity", "📞 Call status listener: docId=$documentId, status='$status', previous='$previousCallStatus', isFromCache=$isFromCache, isCallEnding=$isCallEnding")
+            
+            // Initialize previousCallStatus on first snapshot if not set
+            if (previousCallStatus == null) {
+                previousCallStatus = status
+                android.util.Log.d("VideoCallActivity", "✓ Initialized previousCallStatus to: '$status' (ignoring initial snapshot)")
+                return // Don't process initial snapshot
             }
+            
+            // React to status changes: "ended" or "rejected"
+            // Only process if status changed to ended/rejected and we haven't already started ending
+            val statusChanged = previousCallStatus != status
+            val isEndedOrRejected = status == "ended" || status == "rejected"
+            android.util.Log.d("VideoCallActivity", "  statusChanged=$statusChanged, isEndedOrRejected=$isEndedOrRejected")
+            
+            // Update previousCallStatus for any status change
+            if (statusChanged) {
+                if (!isEndedOrRejected) {
+                    android.util.Log.d("VideoCallActivity", "  → Status changed from '$previousCallStatus' to '$status' (not ended/rejected, continuing to monitor)")
+                }
+                previousCallStatus = status // Update tracked status
+            }
+            
+            if (statusChanged && isEndedOrRejected && !isCallEnding) {
+                isCallEnding = true // Set flag to prevent Agora callbacks from overriding message
+                
+                android.util.Log.d("VideoCallActivity", "⚠️ Call ended/rejected detected! Status changed from '$previousCallStatus' to '$status' - returning to MainActivity")
+                android.util.Log.d("VideoCallActivity", "  isIncoming=$isIncoming, contactName=$contactName")
+                
+                runOnUiThread {
+                    if (isFinishing || isDestroyed || isActivityDestroyed()) {
+                        android.util.Log.w("VideoCallActivity", "Activity already finishing/destroyed, skipping cleanup")
+                        return@runOnUiThread
+                    }
+                    
+                    // Stop ringtone and vibration when call ends/rejects
+                    val serviceIntent = Intent(this@VideoCallActivity, CallService::class.java).apply {
+                        action = CallService.ACTION_END_CALL
+                    }
+                    stopService(serviceIntent)
+                    
+                    // Cleanup Agora before finishing
+                    cleanup()
+                    
+                    // Return to MainActivity with message
+                    val returnIntent = Intent(this@VideoCallActivity, com.familycalls.app.ui.main.MainActivity::class.java).apply {
+                        flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                        when (status) {
+                            "ended" -> putExtra("callEndedMessage", "The call was ended by $contactName")
+                            "rejected" -> putExtra("callEndedMessage", "The call was rejected")
+                            else -> putExtra("callEndedMessage", "The call ended")
+                        }
+                    }
+                    startActivity(returnIntent)
+                    finish()
+                }
+            } else if (!statusChanged && isEndedOrRejected) {
+                android.util.Log.w("VideoCallActivity", "⚠️ Status is already '$status' but no change detected (previous='$previousCallStatus') - this might indicate a listener setup issue")
+            }
+        } else {
+            android.util.Log.w("VideoCallActivity", "Document snapshot is null or doesn't exist (docId=${documentSnapshot?.id})")
+        }
     }
     
     private fun isActivityDestroyed(): Boolean {

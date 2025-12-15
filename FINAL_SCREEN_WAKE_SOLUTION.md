@@ -121,3 +121,5 @@ System dialer apps (like Phone app) have special privileges that third-party app
 3. Configures device settings
 
 **This is normal Android behavior** - even WhatsApp and other apps require similar configuration on some devices.
+
+

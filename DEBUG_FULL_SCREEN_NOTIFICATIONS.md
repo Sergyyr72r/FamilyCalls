@@ -137,3 +137,5 @@ If full-screen notifications still don't work after checking all above:
 3. Check if notification appears at all (even if not full-screen):
    - This helps narrow down the issue
 
+
+

@@ -14,8 +14,8 @@ import com.familycalls.app.ui.call.VideoCallActivity
 class CallNotificationManager(private val context: Context) {
     
     companion object {
-        // Changed channel ID again to force a completely fresh channel creation
-        private const val CHANNEL_ID = "family_calls_channel_v3"
+        // Changed channel ID to force fresh channel creation with call sound/vibration settings
+        private const val CHANNEL_ID = "family_calls_channel_v4_call_ring"
         const val NOTIFICATION_ID = 1001 // Made public so CallService can use it
         
         // Action IDs
@@ -51,16 +51,18 @@ class CallNotificationManager(private val context: Context) {
                     description = "Incoming video calls"
                     setShowBadge(true)
                     
-                    // Enable sound - use ringtone for calls
+                    // Enable sound - use standard ringtone for calls
                     val soundUri = android.provider.Settings.System.DEFAULT_RINGTONE_URI
                     setSound(soundUri, android.media.AudioAttributes.Builder()
                         .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
                         .setUsage(android.media.AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                        .setFlags(android.media.AudioAttributes.FLAG_AUDIBILITY_ENFORCED)
                         .build())
                     
-                    // Enable vibration with pattern
+                    // Enable vibration with standard call pattern (long vibrations like phone calls)
                     enableVibration(true)
-                    vibrationPattern = longArrayOf(0, 500, 200, 500, 200, 500) // Ring pattern
+                    // Standard call vibration: long pause, long vibrate, short pause, long vibrate (repeats)
+                    vibrationPattern = longArrayOf(0, 1000, 500, 1000)
                     
                     // Enable lights
                     enableLights(true)
@@ -153,6 +155,7 @@ class CallNotificationManager(private val context: Context) {
         // Accept action - this is the ONLY way to accept the call
         val acceptIntent = Intent(context, CallActionReceiver::class.java).apply {
             action = ACTION_ACCEPT
+            setPackage(context.packageName) // Explicitly set package for better reliability
             putExtra("contactId", callerId)
             putExtra("contactName", callerName)
             putExtra("contactPhone", callerPhone)
@@ -168,6 +171,7 @@ class CallNotificationManager(private val context: Context) {
         // Reject action
         val rejectIntent = Intent(context, CallActionReceiver::class.java).apply {
             action = ACTION_REJECT
+            setPackage(context.packageName) // Explicitly set package for better reliability
             putExtra("contactId", callerId)
             putExtra("contactName", callerName)
         }
@@ -179,6 +183,8 @@ class CallNotificationManager(private val context: Context) {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         
+        android.util.Log.d("CallNotificationManager", "Created PendingIntents - Accept: $acceptPendingIntent, Reject: $rejectPendingIntent")
+        
         // Build notification with heads-up display (like WhatsApp)
         // This will appear as a popup at the bottom of the screen
         val soundUri = android.provider.Settings.System.DEFAULT_RINGTONE_URI
@@ -187,23 +193,46 @@ class CallNotificationManager(private val context: Context) {
         android.util.Log.d("CallNotificationManager", "Content intent flags: ${contentPendingIntent.intentSender}")
         android.util.Log.d("CallNotificationManager", "Target activity: VideoCallActivity")
         
-        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+        // Standard call vibration pattern: long pause, long vibrate, short pause, long vibrate
+        // This mimics standard phone call vibration and will repeat as long as notification is active
+        val callVibrationPattern = longArrayOf(0, 1000, 500, 1000)
+        
+        // Check if screen is on - only show full-screen notification when screen is off
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+        val isScreenOn = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.KITKAT_WATCH) {
+            powerManager.isInteractive
+        } else {
+            @Suppress("DEPRECATION")
+            powerManager.isScreenOn
+        }
+        
+        android.util.Log.d("CallNotificationManager", "Screen is on: $isScreenOn - full-screen intent will be ${if (isScreenOn) "disabled" else "enabled"}")
+        
+        val notificationBuilder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setCategory(NotificationCompat.CATEGORY_CALL) // Call category triggers call UI
             .setSmallIcon(android.R.drawable.ic_menu_call) // System call icon
             .setContentTitle("Incoming Video Call")
             .setContentText("$callerName is calling...")
             .setPriority(NotificationCompat.PRIORITY_MAX) // MAX priority for urgent calls
             .setContentIntent(contentPendingIntent) // Opens activity when notification body is tapped
-            // Full-screen intent is required for lock screen support
-            // The intent opens VideoCallActivity with isIncoming=true, which shows Accept/Reject buttons
-            // It does NOT auto-accept - user must tap the Accept button
-            // Set to true to wake screen even when device is locked/off
-            .setFullScreenIntent(contentPendingIntent, true) // Required for lock screen, wakes screen
-            .setOngoing(true) // Can't be dismissed easily
-            .setAutoCancel(false)
-            .setDefaults(NotificationCompat.DEFAULT_ALL) // Sound, vibration, lights
-            .setVibrate(longArrayOf(0, 500, 200, 500, 200, 500)) // Ring pattern
-            .setSound(soundUri) // Use ringtone for calls
+        
+        // Full-screen intent: only enable when screen is OFF
+        // When screen is ON, only show pop-up notification (heads-up)
+        // When screen is OFF, full-screen notification will wake screen
+        if (!isScreenOn) {
+            notificationBuilder.setFullScreenIntent(contentPendingIntent, true) // Only when screen is off
+            android.util.Log.d("CallNotificationManager", "Full-screen intent enabled (screen is off)")
+        } else {
+            android.util.Log.d("CallNotificationManager", "Full-screen intent disabled (screen is on - pop-up only)")
+        }
+        
+        val notification = notificationBuilder
+            .setOngoing(true) // Can't be dismissed easily - keeps sound/vibration going
+            .setAutoCancel(false) // Don't auto-cancel - must be explicitly cancelled
+            // Use standard call sound and vibration (sound is set on channel, vibration repeats while notification is active)
+            .setSound(soundUri) // Standard ringtone sound (uses channel's audio attributes)
+            .setVibrate(callVibrationPattern) // Standard call vibration pattern (repeats while notification is active)
+            .setLights(android.graphics.Color.BLUE, 1000, 1000) // Blinking blue light
             .addAction(
                 android.R.drawable.ic_menu_call, // Accept icon
                 "Accept",
@@ -220,7 +249,7 @@ class CallNotificationManager(private val context: Context) {
                     .setBigContentTitle("Incoming Video Call")
             )
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC) // Show on lock screen
-            .setTimeoutAfter(60000) // Auto-dismiss after 60 seconds if not answered
+            // No timeout - notification continues until answered or rejected (sound/vibration will repeat)
             .setShowWhen(false) // Don't show timestamp
             .build()
         

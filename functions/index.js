@@ -177,39 +177,35 @@ exports.sendMessageNotification = onDocumentCreated(
           }
         }
 
-        // Determine message preview text based on type
-        let messagePreview = "";
+        // Determine full message text based on type (don't truncate - let app handle it)
+        let fullMessageText = "";
         const messageType = messageData.type || "text";
         if (messageType === "text") {
-          messagePreview = messageData.text || "";
+          fullMessageText = messageData.text || "";
         } else if (messageType === "image") {
-          messagePreview = "📷 Image";
+          fullMessageText = "📷 Image";
         } else if (messageType === "video") {
-          messagePreview = "🎥 Video";
+          fullMessageText = "🎥 Video";
         }
 
-        // Truncate preview text
-        if (messagePreview.length > 100) {
-          messagePreview = messagePreview.substring(0, 97) + "...";
-        }
-
-        if (!messagePreview || messagePreview.length === 0) {
-          messagePreview = "New message";
-        }
+        // Don't default to "New message" - send empty if no text, app will handle it
+        // But ensure we have something for notification preview
+        const messagePreview = fullMessageText || "New message";
 
         // Send FCM notification
         // Use data-only payload so onMessageReceived is always called
         // This ensures notifications work even when app is closed
+        // IMPORTANT: Send full message text, not truncated preview
         const message = {
           data: {
             type: "message",
             messageId: messageId,
             senderId: senderId,
             receiverId: receiverId,
-            messageText: messagePreview,
+            messageText: fullMessageText, // Send FULL message text, not truncated
             senderName: senderName,
-            title: senderName, // Include in data for notification title
-            body: messagePreview, // Include in data for notification body
+            title: senderName,
+            body: messagePreview, // Preview for compatibility
           },
           token: fcmToken,
           android: {

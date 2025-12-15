@@ -62,37 +62,49 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
                 val callId = data["callId"] ?: "" // Optional, might be used for tracking
 
                 Log.d(TAG, "Received call FCM from: $callerName ($callerId)")
-                Log.d(TAG, "Attempting to start VideoCallActivity directly...")
-
-                // IMPORTANT: When app is closed, directly start the activity to wake screen
-                // Full-screen intents in notifications are unreliable when app is closed
-                // NOTE: This may be blocked by DOZE mode on some devices
-                try {
-                    val activityIntent = android.content.Intent(applicationContext, com.familycalls.app.ui.call.VideoCallActivity::class.java).apply {
-                        putExtra("contactId", callerId)
-                        putExtra("contactName", callerName)
-                        putExtra("contactPhone", callerPhone)
-                        putExtra("isIncoming", true)
-                        flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
-                                android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                                android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                                android.content.Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
+                
+                // Check if screen is on - only start activity directly if screen is OFF
+                val powerManager = applicationContext.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+                val isScreenOn = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.KITKAT_WATCH) {
+                    powerManager.isInteractive
+                } else {
+                    @Suppress("DEPRECATION")
+                    powerManager.isScreenOn
+                }
+                
+                Log.d(TAG, "Screen is on: $isScreenOn")
+                
+                // Only start VideoCallActivity directly when screen is OFF (to wake it)
+                // When screen is ON, only show notification pop-up (via CallService)
+                if (!isScreenOn) {
+                    Log.d(TAG, "Screen is OFF - starting VideoCallActivity directly to wake screen...")
+                    try {
+                        val activityIntent = android.content.Intent(applicationContext, com.familycalls.app.ui.call.VideoCallActivity::class.java).apply {
+                            putExtra("contactId", callerId)
+                            putExtra("contactName", callerName)
+                            putExtra("contactPhone", callerPhone)
+                            putExtra("isIncoming", true)
+                            flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
+                                    android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                                    android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                                    android.content.Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
+                        }
+                        
+                        Log.d(TAG, "Starting activity with intent: $activityIntent")
+                        applicationContext.startActivity(activityIntent)
+                        Log.d(TAG, "✓ VideoCallActivity startActivity() called successfully")
+                    } catch (e: android.content.ActivityNotFoundException) {
+                        Log.e(TAG, "✗ ActivityNotFoundException: VideoCallActivity not found!", e)
+                    } catch (e: android.os.DeadObjectException) {
+                        Log.e(TAG, "✗ DeadObjectException: System killed app, activity start blocked", e)
+                    } catch (e: SecurityException) {
+                        Log.e(TAG, "✗ SecurityException: Permission denied to start activity", e)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "✗ Failed to start activity directly", e)
+                        e.printStackTrace()
                     }
-                    
-                    Log.d(TAG, "Starting activity with intent: $activityIntent")
-                    // Try to start activity directly - this will wake the screen
-                    // On some devices in DOZE mode, this may be silently blocked
-                    applicationContext.startActivity(activityIntent)
-                    Log.d(TAG, "✓ VideoCallActivity startActivity() called successfully")
-                } catch (e: android.content.ActivityNotFoundException) {
-                    Log.e(TAG, "✗ ActivityNotFoundException: VideoCallActivity not found!", e)
-                } catch (e: android.os.DeadObjectException) {
-                    Log.e(TAG, "✗ DeadObjectException: System killed app, activity start blocked", e)
-                } catch (e: SecurityException) {
-                    Log.e(TAG, "✗ SecurityException: Permission denied to start activity", e)
-                } catch (e: Exception) {
-                    Log.e(TAG, "✗ Failed to start activity directly", e)
-                    e.printStackTrace()
+                } else {
+                    Log.d(TAG, "Screen is ON - will only show notification pop-up (no full-screen activity)")
                 }
 
                 // Also start CallService to show notification (for heads-up when screen is already on)
@@ -124,21 +136,31 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
             "message" -> {
                 val senderId = data["senderId"] ?: return
                 val senderName = data["senderName"] ?: "Unknown"
-                val messageText = data["messageText"] ?: "New message"
+                val messageText = data["messageText"] ?: data["body"] ?: "New message"
 
-                Log.d(TAG, "Received message FCM from: $senderName ($senderId) - $messageText")
+                Log.d(TAG, "=== MESSAGE NOTIFICATION ===")
+                Log.d(TAG, "Sender ID: $senderId")
+                Log.d(TAG, "Sender Name: $senderName")
+                Log.d(TAG, "Message Text: $messageText")
+                Log.d(TAG, "Full data payload: $data")
 
                 // Show message notification
                 try {
+                    if (messageText.isEmpty() || messageText == "New message") {
+                        Log.w(TAG, "⚠️ Message text is empty or default - checking data payload")
+                        Log.w(TAG, "Available keys: ${data.keys.joinToString()}")
+                    }
+                    
                     val notificationManager = MessageNotificationManager(applicationContext)
                     notificationManager.showMessageNotification(
                         senderId,
                         senderName,
                         messageText
                     )
-                    Log.d(TAG, "Message notification shown from FCM")
+                    Log.d(TAG, "✓ Message notification shown from FCM")
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to show message notification from FCM", e)
+                    Log.e(TAG, "✗ Failed to show message notification from FCM", e)
+                    e.printStackTrace()
                 }
             }
             else -> {

@@ -45,7 +45,8 @@
         
         <activity
             android:name=".ui.main.MainActivity"
-            android:exported="false" />
+            android:exported="false"
+            android:launchMode="singleTop" />
         
         <activity
             android:name=".ui.chat.ChatActivity"
@@ -76,7 +77,7 @@
         
         <receiver
             android:name=".service.CallActionReceiver"
-            android:exported="false">
+            android:exported="true">
             <intent-filter>
                 <action android:name="com.familycalls.app.ACTION_ACCEPT_CALL" />
                 <action android:name="com.familycalls.app.ACTION_REJECT_CALL" />

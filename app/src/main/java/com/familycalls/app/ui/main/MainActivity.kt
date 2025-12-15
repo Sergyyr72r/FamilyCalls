@@ -190,10 +190,29 @@ class MainActivity : AppCompatActivity() {
             if (currentUserId.isEmpty()) {
                 android.util.Log.w("MainActivity", "WARNING: currentUserId is empty! Listener won't work.")
             }
+            
+            // Check if returning from a call that was ended
+            handleCallEndedMessage(intent)
         } catch (e: Exception) {
             android.util.Log.e("MainActivity", "FATAL ERROR in onCreate()", e)
             e.printStackTrace()
             // Don't rethrow - let the activity continue if possible
+        }
+    }
+    
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        intent?.let { handleCallEndedMessage(it) }
+    }
+    
+    private fun handleCallEndedMessage(intent: Intent) {
+        val callEndedMessage = intent.getStringExtra("callEndedMessage")
+        if (!callEndedMessage.isNullOrEmpty()) {
+            android.util.Log.d("MainActivity", "Showing call ended message: $callEndedMessage")
+            binding.root.postDelayed({
+                android.widget.Toast.makeText(this, callEndedMessage, android.widget.Toast.LENGTH_LONG).show()
+            }, 300) // Small delay to ensure UI is ready
         }
     }
     
@@ -600,6 +619,7 @@ class MainActivity : AppCompatActivity() {
                         }
                         
                         android.util.Log.d("MainActivity", "Call listener triggered. Documents: ${snapshot.documents.size}")
+                        android.util.Log.d("MainActivity", "Snapshot from cache: ${snapshot.metadata.isFromCache}")
                         
                         // Use application context for notifications so they work even when activity is in background
                         val notificationManager = try {
@@ -609,79 +629,92 @@ class MainActivity : AppCompatActivity() {
                             return@addSnapshotListener
                         }
                         
-                        // Process all ringing calls
-                        snapshot.documents.forEach { document ->
-                            try {
-                                val callId = document.id
-                                val callerId = document.getString("callerId")
-                                val status = document.getString("status") ?: return@forEach
-                                
-                                android.util.Log.d("MainActivity", "Found call: id=$callId, callerId=$callerId, status=$status")
-                                
-                                if (callerId.isNullOrEmpty()) {
-                                    android.util.Log.e("MainActivity", "Skipping call with missing callerId: $callId")
-                                    return@forEach
+                        // IMPORTANT: Use documentChanges to only process NEW/ADDED calls
+                        // This prevents phantom notifications from old calls when app starts
+                        // documentChanges only fires for actual changes, not initial snapshot
+                        for (documentChange in snapshot.documentChanges) {
+                            // Only process newly added calls (not from cache)
+                            if (documentChange.type == com.google.firebase.firestore.DocumentChange.Type.ADDED) {
+                                // Skip if this is from cache (initial load of old calls)
+                                if (snapshot.metadata.isFromCache) {
+                                    android.util.Log.d("MainActivity", "Skipping cached call on initial load: ${documentChange.document.id}")
+                                    // Mark as processed but don't notify
+                                    processedCallIds.add(documentChange.document.id)
+                                    continue
                                 }
                                 
-                                // Skip if we've already processed this call
-                                if (processedCallIds.contains(callId)) {
-                                    android.util.Log.d("MainActivity", "Skipping already processed call: $callId")
-                                    return@forEach
-                                }
-                                
-                                // Only process calls that are currently ringing
-                                if (status == "ringing") {
-                                    // Mark as processed immediately to prevent duplicates
-                                    processedCallIds.add(callId)
+                                try {
+                                    val document = documentChange.document
+                                    val callId = document.id
+                                    val callerId = document.getString("callerId")
+                                    val status = document.getString("status") ?: ""
                                     
-                                    android.util.Log.d("MainActivity", "Processing incoming call from: $callerId")
+                                    android.util.Log.d("MainActivity", "Found NEW call: id=$callId, callerId=$callerId, status=$status")
                                     
-                                    // Validate callerId before creating document reference
-                                    if (callerId.isEmpty()) {
-                                        android.util.Log.e("MainActivity", "Invalid empty callerId for call: $callId")
-                                        return@forEach
+                                    if (callerId.isNullOrEmpty()) {
+                                        android.util.Log.e("MainActivity", "Skipping call with missing callerId: $callId")
+                                        continue
                                     }
+                                    
+                                    // Skip if we've already processed this call
+                                    if (processedCallIds.contains(callId)) {
+                                        android.util.Log.d("MainActivity", "Skipping already processed call: $callId")
+                                        continue
+                                    }
+                                    
+                                    // Only process calls that are currently ringing
+                                    if (status == "ringing") {
+                                        // Mark as processed immediately to prevent duplicates
+                                        processedCallIds.add(callId)
+                                        
+                                        android.util.Log.d("MainActivity", "Processing incoming call from: $callerId")
+                                        
+                                        // Validate callerId
+                                        if (callerId.isEmpty()) {
+                                            android.util.Log.e("MainActivity", "Invalid empty callerId for call: $callId")
+                                            continue
+                                        }
 
-                                    // Get caller information
-                                    db.collection("users").document(callerId).get()
-                                        .addOnSuccessListener { userDoc ->
-                                            try {
-                                                if (!userDoc.exists()) {
-                                                    android.util.Log.w("MainActivity", "Caller user document not found: $callerId")
-                                                    processedCallIds.remove(callId) // Allow retry
-                                                    return@addOnSuccessListener
+                                        // Get caller information
+                                        db.collection("users").document(callerId).get()
+                                            .addOnSuccessListener { userDoc ->
+                                                try {
+                                                    if (!userDoc.exists()) {
+                                                        android.util.Log.w("MainActivity", "Caller user document not found: $callerId")
+                                                        processedCallIds.remove(callId) // Allow retry
+                                                        return@addOnSuccessListener
+                                                    }
+                                                    
+                                                    val callerName = userDoc.getString("name") ?: "Unknown"
+                                                    val callerPhone = userDoc.getString("phone") ?: ""
+                                                    
+                                                    android.util.Log.d("MainActivity", "Caller info: name=$callerName, phone=$callerPhone")
+                                                    
+                                                    // Show notification directly - works even when activity is in background
+                                                    // Using application context ensures it works regardless of activity state
+                                                    notificationManager.showIncomingCallNotification(
+                                                        callerId,
+                                                        callerName,
+                                                        callerPhone
+                                                    )
+                                                    android.util.Log.d("MainActivity", "Notification shown successfully")
+                                                } catch (e: Exception) {
+                                                    android.util.Log.e("MainActivity", "Error in onSuccess callback", e)
+                                                    e.printStackTrace()
+                                                    processedCallIds.remove(callId)
                                                 }
-                                                
-                                                val callerName = userDoc.getString("name") ?: "Unknown"
-                                                val callerPhone = userDoc.getString("phone") ?: ""
-                                                
-                                                android.util.Log.d("MainActivity", "Caller info: name=$callerName, phone=$callerPhone")
-                                                
-                                                // Show notification directly - works even when activity is in background
-                                                // Using application context ensures it works regardless of activity state
-                                                notificationManager.showIncomingCallNotification(
-                                                    callerId,
-                                                    callerName,
-                                                    callerPhone
-                                                )
-                                                android.util.Log.d("MainActivity", "Notification shown successfully")
-                                            } catch (e: Exception) {
-                                                android.util.Log.e("MainActivity", "Error in onSuccess callback", e)
-                                                e.printStackTrace()
+                                            }
+                                            .addOnFailureListener { e ->
+                                                android.util.Log.e("MainActivity", "Failed to get caller info", e)
+                                                // Remove from processed set so we can retry
                                                 processedCallIds.remove(callId)
                                             }
-                                        }
-                                        .addOnFailureListener { e ->
-                                            android.util.Log.e("MainActivity", "Failed to get caller info", e)
-                                            // Remove from processed set so we can retry
-                                            processedCallIds.remove(callId)
-                                        }
-                                } else {
-                                    // If status changed, remove from processed set
-                                    processedCallIds.remove(callId)
+                                    } else {
+                                        android.util.Log.d("MainActivity", "Call $callId status is not 'ringing', skipping")
+                                    }
+                                } catch (e: Exception) {
+                                    android.util.Log.e("MainActivity", "Error processing document change", e)
                                 }
-                            } catch (e: Exception) {
-                                android.util.Log.e("MainActivity", "Error processing document", e)
                             }
                         }
                     } catch (e: Exception) {
@@ -1165,7 +1198,7 @@ class MainActivity : AppCompatActivity() {
             
             fun bind(user: User) {
                 binding.tvName.text = user.name
-                binding.tvPhone.text = user.phone
+                binding.tvLastMessage.text = "" // Clear previous message
                 
                 // Load avatar
                 val cvAvatar = binding.root.findViewById<androidx.cardview.widget.CardView>(R.id.cvAvatar)
@@ -1184,6 +1217,9 @@ class MainActivity : AppCompatActivity() {
                     cvAvatar?.setCardBackgroundColor(0xFFE0E0E0.toInt())
                 }
                 
+                // Load last message preview
+                loadLastMessagePreview(user.id)
+                
                 // Card click opens chat
                 binding.root.setOnClickListener {
                     onContactClick(user)
@@ -1193,6 +1229,102 @@ class MainActivity : AppCompatActivity() {
                 binding.ivVideoCall.setOnClickListener {
                     onVideoCallClick(user)
                 }
+            }
+            
+            private fun loadLastMessagePreview(contactId: String) {
+                val userId = this@MainActivity.currentUserId
+                if (userId.isEmpty() || contactId.isEmpty()) {
+                    return
+                }
+                
+                val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                val messagesCollection = db.collection("messages")
+                
+                // Get messages from both directions and find the most recent
+                // We'll get a limited set and sort by timestamp in memory to avoid index requirements
+                var messagesFromMe = emptyList<com.familycalls.app.data.model.Message>()
+                var messagesFromContact = emptyList<com.familycalls.app.data.model.Message>()
+                
+                fun updatePreview() {
+                    // Combine all messages and find the most recent one
+                    val allMessages = (messagesFromMe + messagesFromContact)
+                        .distinctBy { it.id }
+                        .sortedByDescending { it.timestamp }
+                    
+                    val lastMessage = allMessages.firstOrNull()
+                    if (lastMessage != null) {
+                        val preview = formatMessagePreview(lastMessage)
+                        binding.tvLastMessage.text = preview
+                    } else {
+                        binding.tvLastMessage.text = ""
+                    }
+                }
+                
+                // Query 1: Messages where current user is sender (to contact)
+                messagesCollection
+                    .whereEqualTo("senderId", userId)
+                    .whereEqualTo("receiverId", contactId)
+                    .limit(20) // Get last 20 messages, we'll find most recent in memory
+                    .get()
+                    .addOnSuccessListener { snapshot1 ->
+                        messagesFromMe = snapshot1.documents.mapNotNull { doc ->
+                            try {
+                                doc.toObject(com.familycalls.app.data.model.Message::class.java)?.copy(id = doc.id)
+                            } catch (e: Exception) {
+                                android.util.Log.e("ContactViewHolder", "Error parsing message", e)
+                                null
+                            }
+                        }
+                        updatePreview()
+                    }
+                    .addOnFailureListener { e ->
+                        android.util.Log.d("ContactViewHolder", "Failed to load messages from me", e)
+                        updatePreview()
+                    }
+                
+                // Query 2: Messages where contact is sender (to current user)
+                messagesCollection
+                    .whereEqualTo("senderId", contactId)
+                    .whereEqualTo("receiverId", userId)
+                    .limit(20) // Get last 20 messages, we'll find most recent in memory
+                    .get()
+                    .addOnSuccessListener { snapshot2 ->
+                        messagesFromContact = snapshot2.documents.mapNotNull { doc ->
+                            try {
+                                doc.toObject(com.familycalls.app.data.model.Message::class.java)?.copy(id = doc.id)
+                            } catch (e: Exception) {
+                                android.util.Log.e("ContactViewHolder", "Error parsing message", e)
+                                null
+                            }
+                        }
+                        updatePreview()
+                    }
+                    .addOnFailureListener { e ->
+                        android.util.Log.d("ContactViewHolder", "Failed to load messages from contact", e)
+                        updatePreview()
+                    }
+            }
+            
+            private fun formatMessagePreview(message: com.familycalls.app.data.model.Message): String {
+                val text = when (message.type) {
+                    com.familycalls.app.data.model.MessageType.TEXT -> message.text
+                    com.familycalls.app.data.model.MessageType.IMAGE -> "📷 Image"
+                    com.familycalls.app.data.model.MessageType.VIDEO -> "🎥 Video"
+                }
+                
+                if (text.isEmpty()) {
+                    return ""
+                }
+                
+                // Get first 5 words
+                val words = text.trim().split(Regex("\\s+"))
+                val preview = if (words.size > 5) {
+                    words.take(5).joinToString(" ") + "..."
+                } else {
+                    text
+                }
+                
+                return preview
             }
         }
     }

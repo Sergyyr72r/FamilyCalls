@@ -23,8 +23,8 @@ This guide will help you set up Firebase Cloud Messaging to wake up phones when 
 ## Step 2: Initialize Firebase Functions
 
 1. In your project directory (`/Users/sergeyromanov/Desktop/FamilyCalls`), run:
-   ```bashfirebase init functions
-   
+   ```bash
+   firebase init functions
    ```
 
 2. When prompted:
